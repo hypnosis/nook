@@ -1,5 +1,11 @@
 # nook
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/hypnosis/nook?sort=semver)](https://github.com/hypnosis/nook/releases/latest)
+![Platform: macOS 26 Tahoe](https://img.shields.io/badge/platform-macOS%2026%20Tahoe-blue)
+![Rust](https://img.shields.io/badge/Rust-1.95+-orange?logo=rust)
+![Built with objc2](https://img.shields.io/badge/built%20with-objc2-blueviolet)
+
 Hide extra menu bar icons on macOS. Native, lightweight, no hacks.
 
 ## What it does
@@ -7,6 +13,14 @@ Hide extra menu bar icons on macOS. Native, lightweight, no hacks.
 Your menu bar fills up with status icons you rarely look at. **nook** pushes the
 extra ones off the edge of the screen, so they're out of sight. Click to bring
 them back. That's it.
+
+**Shown** — the anchor `<` and the icons to its left:
+
+![nook showing icons](docs/screenshots/screenshot-shown.png)
+
+**Hidden** — click the anchor and they slide past the edge:
+
+![nook hiding icons](docs/screenshots/screenshot-hidden.png)
 
 ## How it works
 

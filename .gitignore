@@ -4,6 +4,9 @@
 .DS_Store
 
 # Собранные артефакты (регенерируются bundle.sh / make-dmg.sh)
+# Дистрибутивы идут в GitHub Releases, не в репозиторий.
 *.app/
 *.dmg
+nook-*.zip
+SHA256SUMS.txt
 dmg-staging/
