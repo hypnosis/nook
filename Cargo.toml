@@ -3,6 +3,10 @@ name = "nook"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.95"
+description = "Hide extra menu bar icons on macOS. Native, lightweight, no hacks."
+license = "MIT"
+repository = "https://github.com/hypnosis/nook"
+readme = "README.md"
 
 [dependencies]
 objc2 = "0.6.4"

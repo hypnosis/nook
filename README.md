@@ -1,19 +1,75 @@
-# clearbar
+# nook
 
-Лёгкая нативная утилита для macOS, которая прячет лишние иконки в строке меню. Аналог HiddenBar / Ice. Скрытие делает спейсер (свой невидимый разделитель выталкивает иконки за край), а по клику на `<` снизу выезжает полоска-бар своих ярлыков — путь «полу-IceBar», без хаков (см. ADR 004).
+Hide extra menu bar icons on macOS. Native, lightweight, no hacks.
 
-## Стек
+## What it does
 
-- **Rust** + **objc2** — тонкая обёртка над нативным AppKit (`NSStatusItem`, `NSStatusBar`, `NSPanel`).
-- Таргет: **только macOS 26 Tahoe**.
-- Без Screen Recording, без `CGEvent`, без Accessibility — полоска показывает свои плашки, а не снимки чужих иконок.
+Your menu bar fills up with status icons you rarely look at. **nook** pushes the
+extra ones off the edge of the screen, so they're out of sight. Click to bring
+them back. That's it.
 
-## Статус
+## How it works
 
-ШАГ 1 (фундамент скрытия) готов и проверен на Tahoe: в строке меню живёт якорь `<`, клик по нему прячет лишние иконки за край и возвращает обратно. Скрытие толкает спейсер, защищённый guard'ом по реальным координатам. Дальше — полоска-бар своих ярлыков, автоскрытие, настройки. План — по спринтам в `sprints/` (завершённые в `archive/`, следующие в `planned/`).
+nook adds two small items to your menu bar:
 
-## Документация
+- **`<`** — the anchor. Click it to hide or show.
+- **`|`** — the cutter. Everything to the **left** of the cutter is what gets hidden.
 
-- `docs/project/OVERVIEW.md` — что это и зачем.
-- `docs/decisions/` — почему именно такой стек и UX.
-- `sprints/roadmap/ROADMAP.md` — фазы и порядок работ.
+When you hide, the cutter expands leftward and shoves every icon left of it past
+the edge of the screen. Click `<` again and they slide back.
+
+It also hides on its own: **1 second after launch**, and after **3 seconds of
+inactivity** once your mouse leaves the menu bar.
+
+### If the anchor shows `⚠`
+
+The order of the two items matters: the cutter `|` must sit to the **left** of
+the anchor `<`. macOS doesn't guarantee the order they end up in, so sometimes
+they land swapped — `<` ends up left of `|`. When that happens nook refuses to
+hide (it would push its own anchor off-screen) and the anchor shows `⚠` instead.
+
+To fix it, swap their positions: **hold Cmd and drag** the items in the menu bar
+until the cutter is left of the anchor.
+
+## Why no hacks
+
+Tools like Bartender mirror other apps' icons by screen-recording the menu bar
+and faking input events (Screen Recording, Accessibility, synthetic events).
+That's fragile — it breaks on almost every macOS update. nook doesn't do any of
+that. It only manages its own menu bar items and pushes the rest off-screen with
+a plain spacer. Pure AppKit, nothing to break.
+
+## Requirements
+
+- macOS 26 Tahoe
+- Apple Silicon (arm64)
+
+## Install
+
+1. Download the `.dmg` from [Releases](../../releases) and drag **nook** into Applications.
+2. The app is ad-hoc signed (not notarized), so on first launch macOS will block
+   it. Right-click the app → **Open** → **Open**. Or from Terminal:
+
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/nook.app
+   ```
+
+To quit, right-click the `<` anchor and choose **Quit**.
+
+## Build from source
+
+Requires Rust 1.95+.
+
+```sh
+cargo build --release   # build the binary
+./make-dmg.sh           # bundle into nook.app and a .dmg
+```
+
+## Note
+
+Right-clicking the anchor opens a menu — using that menu as the place for
+settings and controls is a direction worth exploring.
+
+## License
+
+[MIT](LICENSE) — free to use, modify, and build on.

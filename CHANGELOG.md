@@ -1,21 +1,22 @@
 # Changelog
 
-Все заметные изменения проекта фиксируются в этом файле.
+All notable changes to this project are documented in this file.
 
-Формат основан на [Keep a Changelog](https://keepachangelog.com/),
-проект придерживается [семантического версионирования](https://semver.org/).
+The format is based on [Keep a Changelog](https://keepachangelog.com/),
+and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.0] - 2026-06-05
+
+First release. Hiding extra menu bar icons — the foundation is in place and
+verified live on Tahoe.
 
 ### Added
-- ШАГ 1 (фундамент скрытия иконок): каркас на Rust + objc2, проверен вживую на Tahoe.
-  - Два статус-айтема: видимый якорь `<` (кликом прячет/возвращает иконки) и спейсер-cutter, который раздувается до ~ширины экрана и выталкивает иконки левее себя за край.
-  - GUARD порядка: спейсер раздувается только если он реально левее якоря (сверка X-координат). Иначе скрытие блокируется — якорь показывает `⚠<` с подсказкой поправить Cmd+drag. Убирает баг «`<` улетел за край».
-  - Стартовое авто-скрытие через `NSTimer` 1с после запуска.
-  - Позиции айтемов запоминаются через `setAutosaveName` (переживают перезапуск).
-  - Приложение-агент без Dock (`Accessory`), логирование в файл, сборка через `bundle.sh` + `ctl.sh`.
+- Icon hiding via a spacer: two status items — a visible anchor `<` (click to hide/show icons) and a spacer-cutter `|` that expands to roughly the screen width and pushes the icons left of it off the edge.
+- Order guard: the spacer only expands when it is actually left of the anchor (X-coordinate check). Otherwise hiding is blocked and the anchor shows `⚠` with a hint to fix the order via Cmd+drag. Prevents the "`<` flew off the edge" bug.
+- Auto-hide: 1 second after launch and after 3 seconds of inactivity (once the mouse leaves the menu bar).
+- Right-click context menu on the anchor: About and Quit.
+- Item positions are remembered via `setAutosaveName` (persist across restarts).
+- Agent app with no Dock icon (`LSUIElement`); builds `.app` + `.dmg` through `make-dmg.sh` (ad-hoc signed).
 
 ### Changed
-- Спринты `01_CORE_status-item-ffi` и `02_CORE_hide-show` завершены и перенесены в `sprints/archive/`.
-
-### Fixed
+- Sprints `01_CORE_status-item-ffi` and `02_CORE_hide-show` completed and moved to `sprints/archive/`.
