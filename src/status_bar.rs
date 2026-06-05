@@ -33,8 +33,8 @@ use objc2_foundation::NSString;
 use crate::strings::{self, Lang};
 
 /// Стабильные имена автосохранения позиций (Cmd+drag переживает перезапуск).
-const ANCHOR_AUTOSAVE: &str = "clearbar-anchor";
-const SPACER_AUTOSAVE: &str = "clearbar-spacer";
+const ANCHOR_AUTOSAVE: &str = "nook-anchor";
+const SPACER_AUTOSAVE: &str = "nook-spacer";
 
 /// Ширина спейсера в показанном состоянии. 12pt — иконка cutter остаётся видимой
 /// и кликабельной (при 6pt пропадала).
