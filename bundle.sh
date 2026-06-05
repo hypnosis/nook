@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="nook"
+# Brand name (capitalized, per Apple HIG) — bundle and display name.
+APP_NAME="Nook"
+# Binary slug (lowercase) — cargo binary name.
+SLUG="nook"
 APP_DIR="${APP_NAME}.app"
-BINARY_NAME="${APP_NAME}"
+BINARY_NAME="${SLUG}"
 
 echo "==> Building ${APP_NAME}..."
 cargo build
@@ -27,7 +30,9 @@ cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
     <key>CFBundleIdentifier</key>
     <string>com.hypnosis.nook</string>
     <key>CFBundleName</key>
-    <string>nook</string>
+    <string>Nook</string>
+    <key>CFBundleDisplayName</key>
+    <string>Nook</string>
     <key>CFBundleExecutable</key>
     <string>nook</string>
     <key>CFBundleVersion</key>

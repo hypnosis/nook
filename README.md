@@ -67,7 +67,7 @@ a plain spacer. Pure AppKit, nothing to break.
    it. Right-click the app → **Open** → **Open**. Or from Terminal:
 
    ```sh
-   xattr -dr com.apple.quarantine /Applications/nook.app
+   xattr -dr com.apple.quarantine /Applications/Nook.app
    ```
 
 To quit, right-click the `‹` anchor and choose **Quit**.
@@ -78,7 +78,7 @@ Requires Rust 1.95+.
 
 ```sh
 cargo build --release   # build the binary
-./make-dmg.sh           # bundle into nook.app and a .dmg
+./make-dmg.sh           # bundle into Nook.app and a .dmg
 ```
 
 ## Note

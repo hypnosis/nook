@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="nook"
+# Brand name (capitalized, per Apple HIG) — used for the bundle, display name and DMG volume.
+APP_NAME="Nook"
+# Binary / file slug (lowercase) — cargo binary name and download file names.
+SLUG="nook"
 APP_DIR="${APP_NAME}.app"
-BINARY_NAME="${APP_NAME}"
+BINARY_NAME="${SLUG}"
 VERSION="0.1.0"
 
-DMG_NAME="${APP_NAME}-${VERSION}.dmg"
+DMG_NAME="${SLUG}-${VERSION}.dmg"
 VOL_NAME="${APP_NAME}"
 
 echo "==> Building release ${APP_NAME}..."
@@ -32,7 +35,9 @@ cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
     <key>CFBundleIdentifier</key>
     <string>com.hypnosis.nook</string>
     <key>CFBundleName</key>
-    <string>nook</string>
+    <string>Nook</string>
+    <key>CFBundleDisplayName</key>
+    <string>Nook</string>
     <key>CFBundleExecutable</key>
     <string>nook</string>
     <key>CFBundleVersion</key>
