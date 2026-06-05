@@ -10,9 +10,13 @@ cargo build
 
 echo "==> Creating .app bundle structure..."
 mkdir -p "${APP_DIR}/Contents/MacOS"
+mkdir -p "${APP_DIR}/Contents/Resources"
 
 echo "==> Copying binary..."
 cp "target/debug/${BINARY_NAME}" "${APP_DIR}/Contents/MacOS/${BINARY_NAME}"
+
+echo "==> Copying app icon..."
+cp "assets/Nook.icns" "${APP_DIR}/Contents/Resources/Nook.icns"
 
 echo "==> Writing Info.plist..."
 cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
@@ -32,6 +36,8 @@ cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
     <string>0.1.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>Nook</string>
     <key>LSUIElement</key>
     <true/>
     <key>LSMinimumSystemVersion</key>
