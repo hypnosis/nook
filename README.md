@@ -16,11 +16,11 @@ them back. That's it.
 
 **Shown** — the chevron anchor `‹` and the icons to its left:
 
-![nook showing icons](docs/screenshots/screenshot-shown.png)
+<img src="docs/screenshots/screenshot-shown.png" width="720" alt="nook showing icons">
 
 **Hidden** — click the anchor and they slide past the edge:
 
-![nook hiding icons](docs/screenshots/screenshot-hidden.png)
+<img src="docs/screenshots/screenshot-hidden.png" width="720" alt="nook hiding icons">
 
 ## How it works
 
