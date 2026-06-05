@@ -1,0 +1,32 @@
+[package]
+name = "clearbar"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+
+[dependencies]
+objc2 = "0.6.4"
+objc2-foundation = { version = "0.3.2", features = ["NSTimer", "NSDate"] }
+objc2-app-kit = { version = "0.3.2", features = [
+    "NSApplication",
+    "NSButton",
+    "NSControl",
+    "NSMenu",
+    "NSMenuItem",
+    "NSResponder",
+    "NSScreen",
+    "NSStatusBar",
+    "NSStatusBarButton",
+    "NSStatusItem",
+    "NSView",
+    "NSWindow",
+    "objc2-core-foundation",
+] }
+objc2-core-foundation = "*"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"
