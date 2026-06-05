@@ -2,3 +2,8 @@
 
 # macOS
 .DS_Store
+
+# Собранные артефакты (регенерируются bundle.sh / make-dmg.sh)
+/clearbar.app/
+*.dmg
+dmg-staging/

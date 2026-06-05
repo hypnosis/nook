@@ -7,9 +7,12 @@
 //! Позиции айтемов запоминаются системой через setAutosaveName: разложил пару
 //! Cmd+drag один раз — порядок переживает перезапуск.
 
+mod auto_collapse;
 mod controller;
 mod log;
+mod menu;
 mod status_bar;
+mod strings;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;

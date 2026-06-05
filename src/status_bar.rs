@@ -25,32 +25,33 @@
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{sel, MainThreadMarker};
-use objc2_app_kit::{NSStatusBar, NSStatusItem, NSVariableStatusItemLength};
+use objc2_app_kit::{
+    NSEventMask, NSImage, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+};
 use objc2_foundation::NSString;
+
+use crate::strings::{self, Lang};
 
 /// Стабильные имена автосохранения позиций (Cmd+drag переживает перезапуск).
 const ANCHOR_AUTOSAVE: &str = "clearbar-anchor";
 const SPACER_AUTOSAVE: &str = "clearbar-spacer";
 
-/// Ширина спейсера в показанном состоянии. 12pt — полоска `▏` остаётся видимой
-/// и кликабельной как cutter (при 6pt пропадала).
-// HARDCODE: ширина спейсера показанного; вынести в конфиг + сделать невидимым позже.
+/// Ширина спейсера в показанном состоянии. 12pt — иконка cutter остаётся видимой
+/// и кликабельной (при 6pt пропадала).
+// HARDCODE: ширина спейсера показанного; вынести в конфиг позже.
 pub const SPACER_WIDTH_SHOWN: f64 = 12.0;
 
-/// Символ-полоска видимого спейсера (отладка — видеть, где он стоит).
-// DEBUG: убрать заголовок спейсера, когда порядок/guard подтверждены.
-const SPACER_TITLE_DEBUG: &str = "▏";
+/// SF Symbol спейсера-cutter (decrease.indent — нативный аналог list-indent-decrease).
+/// Видимость постоянная: cutter явно показывает границу зоны скрытия.
+const SPACER_SYMBOL: &str = "decrease.indent";
 
-/// Символ якоря: иконки видны (клик спрячет).
-pub const ANCHOR_TITLE_SHOWN: &str = "<";
-/// Символ якоря: иконки спрятаны (клик вернёт).
-pub const ANCHOR_TITLE_HIDDEN: &str = "v";
-/// Символ якоря: guard заблокировал скрытие. `⚠` + `<` — видно, что это якорь
-/// с ошибкой порядка, а не просто значок.
-pub const ANCHOR_TITLE_BLOCKED: &str = "⚠<";
+/// SF Symbol якоря: иконки видны (клик спрячет) — шеврон влево.
+pub const ANCHOR_SYMBOL_SHOWN: &str = "chevron.left";
+/// SF Symbol якоря: иконки спрятаны (клик вернёт) — шеврон вниз.
+pub const ANCHOR_SYMBOL_HIDDEN: &str = "chevron.down";
+/// SF Symbol якоря: guard заблокировал скрытие — треугольник предупреждения.
+pub const ANCHOR_SYMBOL_BLOCKED: &str = "exclamationmark.triangle";
 
-/// Подсказка на якоре — что делать. `<` должен идти ЗА cutter `▏` (правее него).
-const ANCHOR_TOOLTIP: &str = "< должен идти за cutter ▏ (полоска слева от <). Поправь Cmd+drag.";
 
 /// Пара айтемов. Контроллер держит оба `Retained`, пока жив.
 pub struct StatusItems {
@@ -62,18 +63,21 @@ pub struct StatusItems {
 ///
 /// # Safety
 /// `target` должен жить не меньше айтемов и реализовывать `action`.
-pub unsafe fn create(mtm: MainThreadMarker, target: &AnyObject) -> StatusItems {
+pub unsafe fn create(mtm: MainThreadMarker, target: &AnyObject, lang: Lang) -> StatusItems {
     let bar = NSStatusBar::systemStatusBar();
 
     let anchor = bar.statusItemWithLength(NSVariableStatusItemLength);
     anchor.setAutosaveName(Some(&NSString::from_str(ANCHOR_AUTOSAVE)));
     if let Some(button) = anchor.button(mtm) {
-        button.setTitle(&NSString::from_str(ANCHOR_TITLE_SHOWN));
-        button.setToolTip(Some(&NSString::from_str(ANCHOR_TOOLTIP)));
+        set_button_symbol(&button, ANCHOR_SYMBOL_SHOWN);
+        button.setToolTip(Some(&NSString::from_str(strings::anchor_tooltip(lang))));
         button.setTarget(Some(target));
         button.setAction(Some(action_for_click()));
+        // Ловим И левый, И правый клик — разделяем их в обработчике (левый =
+        // toggle, правый = меню). sendActionOn возвращает старую маску — игнор.
+        let _ = button.sendActionOn(NSEventMask::LeftMouseUp | NSEventMask::RightMouseUp);
         crate::log::append(&format!(
-            "created anchor: autosave='{ANCHOR_AUTOSAVE}' title='{ANCHOR_TITLE_SHOWN}' variableLength"
+            "created anchor: autosave='{ANCHOR_AUTOSAVE}' symbol='{ANCHOR_SYMBOL_SHOWN}' variableLength"
         ));
     } else {
         crate::log::append("WARNING: anchor button() returned nil — клик работать не будет");
@@ -82,14 +86,34 @@ pub unsafe fn create(mtm: MainThreadMarker, target: &AnyObject) -> StatusItems {
     let spacer = bar.statusItemWithLength(SPACER_WIDTH_SHOWN);
     spacer.setAutosaveName(Some(&NSString::from_str(SPACER_AUTOSAVE)));
     if let Some(button) = spacer.button(mtm) {
-        button.setToolTip(Some(&NSString::from_str("спейсер (полоска) — отладка")));
-        button.setTitle(&NSString::from_str(SPACER_TITLE_DEBUG));
+        button.setToolTip(Some(&NSString::from_str(strings::cutter_tooltip(lang))));
+        set_button_symbol(&button, SPACER_SYMBOL);
     }
     crate::log::append(&format!(
-        "created spacer: autosave='{SPACER_AUTOSAVE}' length={SPACER_WIDTH_SHOWN} title='{SPACER_TITLE_DEBUG}'(debug)"
+        "created spacer: autosave='{SPACER_AUTOSAVE}' length={SPACER_WIDTH_SHOWN} symbol='{SPACER_SYMBOL}'"
     ));
 
     StatusItems { anchor, spacer }
+}
+
+/// Ставит на кнопку якоря SF Symbol по имени. Используется контроллером при
+/// смене состояния (показано/скрыто/заблокировано).
+pub fn set_anchor_symbol(items: &StatusItems, mtm: MainThreadMarker, symbol_name: &str) {
+    if let Some(button) = items.anchor.button(mtm) {
+        set_button_symbol(&button, symbol_name);
+    }
+}
+
+/// Загружает системный SF Symbol и ставит его картинкой на кнопку. Если символа
+/// нет в системе (опечатка/старая macOS) — логируем и оставляем кнопку как есть.
+fn set_button_symbol(button: &objc2_app_kit::NSStatusBarButton, symbol_name: &str) {
+    let name = NSString::from_str(symbol_name);
+    match NSImage::imageWithSystemSymbolName_accessibilityDescription(&name, None) {
+        Some(image) => button.setImage(Some(&image)),
+        None => crate::log::append(&format!(
+            "WARNING: SF Symbol '{symbol_name}' не найден в системе"
+        )),
+    }
 }
 
 /// X-координата айтема на экране (левый край его окна). `None`, если окна ещё нет
