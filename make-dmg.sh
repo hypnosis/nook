@@ -27,7 +27,7 @@ cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.danila.nook</string>
+    <string>com.hypnosis.nook</string>
     <key>CFBundleName</key>
     <string>nook</string>
     <key>CFBundleExecutable</key>
