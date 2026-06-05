@@ -14,7 +14,7 @@ Your menu bar fills up with status icons you rarely look at. **nook** pushes the
 extra ones off the edge of the screen, so they're out of sight. Click to bring
 them back. That's it.
 
-**Shown** — the anchor `<` and the icons to its left:
+**Shown** — the chevron anchor `‹` and the icons to its left:
 
 ![nook showing icons](docs/screenshots/screenshot-shown.png)
 
@@ -26,21 +26,23 @@ them back. That's it.
 
 nook adds two small items to your menu bar:
 
-- **`<`** — the anchor. Click it to hide or show.
-- **`|`** — the cutter. Everything to the **left** of the cutter is what gets hidden.
+- **the chevron anchor** `‹` — click it to hide or show.
+- **the cutter** `▏` — everything to the **left** of the cutter is what gets hidden.
 
 When you hide, the cutter expands leftward and shoves every icon left of it past
-the edge of the screen. Click `<` again and they slide back.
+the edge of the screen. The chevron flips to point down `⌄`. Click it again and
+they slide back.
 
 It also hides on its own: **1 second after launch**, and after **3 seconds of
 inactivity** once your mouse leaves the menu bar.
 
 ### If the anchor shows `⚠`
 
-The order of the two items matters: the cutter `|` must sit to the **left** of
-the anchor `<`. macOS doesn't guarantee the order they end up in, so sometimes
-they land swapped — `<` ends up left of `|`. When that happens nook refuses to
-hide (it would push its own anchor off-screen) and the anchor shows `⚠` instead.
+The order of the two items matters: the cutter `▏` must sit to the **left** of
+the anchor `‹`. macOS doesn't guarantee the order they end up in, so sometimes
+they land swapped — the anchor ends up left of the cutter. When that happens nook
+refuses to hide (it would push its own anchor off-screen) and the anchor shows
+`⚠` instead.
 
 To fix it, swap their positions: **hold Cmd and drag** the items in the menu bar
 until the cutter is left of the anchor.
@@ -53,7 +55,7 @@ That's fragile — it breaks on almost every macOS update. nook doesn't do any o
 that. It only manages its own menu bar items and pushes the rest off-screen with
 a plain spacer. Pure AppKit, nothing to break.
 
-## Requirements
+## Tested on
 
 - macOS 26 Tahoe
 - Apple Silicon (arm64)
@@ -68,7 +70,7 @@ a plain spacer. Pure AppKit, nothing to break.
    xattr -dr com.apple.quarantine /Applications/nook.app
    ```
 
-To quit, right-click the `<` anchor and choose **Quit**.
+To quit, right-click the `‹` anchor and choose **Quit**.
 
 ## Build from source
 
