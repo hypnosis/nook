@@ -1,14 +1,14 @@
 #!/bin/bash
 
-# Control script for clearbar macOS menu bar utility
+# Control script for nook macOS menu bar utility
 # Usage: ./ctl.sh [start|stop|restart]
 
 set -o pipefail
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_PATH="$SCRIPT_DIR/clearbar.app"
-PROCESS_PATTERN="clearbar.app/Contents/MacOS/clearbar"
+APP_PATH="$SCRIPT_DIR/nook.app"
+PROCESS_PATTERN="nook.app/Contents/MacOS/nook"
 
 # Colors for output
 RED='\033[0;31m'
@@ -27,9 +27,9 @@ show_usage() {
 Usage: $0 [command]
 
 Commands:
-  start       Start clearbar application
-  stop        Stop clearbar application
-  restart     Restart clearbar application (stop then start)
+  start       Start nook application
+  stop        Stop nook application
+  restart     Restart nook application (stop then start)
 
 Example:
   $0 start
@@ -41,26 +41,26 @@ EOF
 # Function to start the app
 start_app() {
     if is_running; then
-        echo -e "${YELLOW}clearbar is already running${NC}"
+        echo -e "${YELLOW}nook is already running${NC}"
         return 0
     fi
 
     if [ ! -d "$APP_PATH" ]; then
-        echo -e "${RED}Error: clearbar.app not found at $APP_PATH${NC}"
+        echo -e "${RED}Error: nook.app not found at $APP_PATH${NC}"
         return 1
     fi
 
-    echo "Starting clearbar..."
+    echo "Starting nook..."
     open "$APP_PATH"
 
     # Wait a moment for the app to launch
     sleep 1
 
     if is_running; then
-        echo -e "${GREEN}clearbar started successfully${NC}"
+        echo -e "${GREEN}nook started successfully${NC}"
         return 0
     else
-        echo -e "${RED}Failed to start clearbar${NC}"
+        echo -e "${RED}Failed to start nook${NC}"
         return 1
     fi
 }
@@ -68,34 +68,34 @@ start_app() {
 # Function to stop the app
 stop_app() {
     if ! is_running; then
-        echo -e "${YELLOW}clearbar is not running${NC}"
+        echo -e "${YELLOW}nook is not running${NC}"
         return 0
     fi
 
-    echo "Stopping clearbar..."
+    echo "Stopping nook..."
     pkill -f "$PROCESS_PATTERN" || true
 
     # Wait a moment for the process to terminate
     sleep 1
 
     if is_running; then
-        echo -e "${YELLOW}clearbar did not stop cleanly, forcing...${NC}"
+        echo -e "${YELLOW}nook did not stop cleanly, forcing...${NC}"
         pkill -9 -f "$PROCESS_PATTERN" || true
         sleep 1
     fi
 
     if ! is_running; then
-        echo -e "${GREEN}clearbar stopped successfully${NC}"
+        echo -e "${GREEN}nook stopped successfully${NC}"
         return 0
     else
-        echo -e "${RED}Failed to stop clearbar${NC}"
+        echo -e "${RED}Failed to stop nook${NC}"
         return 1
     fi
 }
 
 # Function to restart the app
 restart_app() {
-    echo "Restarting clearbar..."
+    echo "Restarting nook..."
     stop_app
     sleep 1
     start_app

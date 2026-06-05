@@ -109,10 +109,10 @@ define_class!(
             }
         }
 
-        /// Пункт меню «О clearbar» — пишем версию в лог (диалог — позже).
+        /// Пункт меню «О Nook» — пишем версию в лог (диалог — позже).
         #[unsafe(method(onAbout:))]
         fn on_about(&self, _sender: *mut AnyObject) {
-            crate::log::append(&format!("О clearbar: версия {}", env!("CARGO_PKG_VERSION")));
+            crate::log::append(&format!("О Nook: версия {}", env!("CARGO_PKG_VERSION")));
         }
 
         /// Пункт меню «Выход» — завершаем приложение.

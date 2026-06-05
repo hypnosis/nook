@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="clearbar"
+APP_NAME="nook"
 APP_DIR="${APP_NAME}.app"
 BINARY_NAME="${APP_NAME}"
 
@@ -21,11 +21,11 @@ cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.danila.clearbar</string>
+    <string>com.danila.nook</string>
     <key>CFBundleName</key>
-    <string>clearbar</string>
+    <string>nook</string>
     <key>CFBundleExecutable</key>
-    <string>clearbar</string>
+    <string>nook</string>
     <key>CFBundleVersion</key>
     <string>0.1.0</string>
     <key>CFBundleShortVersionString</key>

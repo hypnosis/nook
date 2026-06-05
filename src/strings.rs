@@ -28,8 +28,8 @@ pub fn detect() -> Lang {
 /// Пункт меню «О программе».
 pub fn menu_about(lang: Lang) -> &'static str {
     match lang {
-        Lang::En => "About clearbar",
-        Lang::Ru => "О clearbar",
+        Lang::En => "About Nook",
+        Lang::Ru => "О Nook",
     }
 }
 

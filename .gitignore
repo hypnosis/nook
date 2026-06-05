@@ -4,6 +4,6 @@
 .DS_Store
 
 # Собранные артефакты (регенерируются bundle.sh / make-dmg.sh)
-/clearbar.app/
+*.app/
 *.dmg
 dmg-staging/

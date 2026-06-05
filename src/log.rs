@@ -2,13 +2,13 @@
 //!
 //! ШАГ 1 рассчитан на ручной тест заказчиком: приложение — agent-app без окна,
 //! stdout не виден. Поэтому всё поведение пишем в файл, который заказчик смотрит
-//! через `tail -f /tmp/clearbar-debug.log`.
+//! через `tail -f /tmp/nook-debug.log`.
 
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const LOG_PATH: &str = "/tmp/clearbar-debug.log";
+const LOG_PATH: &str = "/tmp/nook-debug.log";
 
 /// Дописывает строку в лог-файл с секундной меткой от старта эпохи.
 ///
@@ -34,6 +34,6 @@ pub fn reset() {
         .truncate(true)
         .open(LOG_PATH)
     {
-        let _ = writeln!(file, "=== clearbar session start ===");
+        let _ = writeln!(file, "=== nook session start ===");
     }
 }
