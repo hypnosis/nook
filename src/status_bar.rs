@@ -14,13 +14,12 @@
 //! - СПЕЙСЕР — раздуваем ЕГО: правый край прибит к левому краю якоря, растёт
 //!   влево, толкает только иконки левее себя.
 //!
-//! ВАЖНО (урок из тестов на Tahoe): порядок создания НЕ гарантирует, что спейсер
-//! окажется левее якоря — система может поставить наоборот. Нет API двигать
-//! айтемы программно. Поэтому надёжность даёт НЕ порядок, а GUARD в контроллере:
-//! перед раздуванием сверяем реальные X-координаты, и если спейсер не левее —
-//! НЕ раздуваем (иначе вылетел бы сам якорь). Пользователь правит Cmd+drag.
-//!
-//! Спейсер сейчас ВИДИМЫЙ (полоска) — для отладки, чтобы глазами видеть порядок.
+//! НАДЁЖНОСТЬ РАЗМЕЩЕНИЯ (Tahoe, journal 006): размещение NSStatusItem асинхронно
+//! и иногда «залипает» на x=0 (айтем не получил слот). Лечится тремя слоями:
+//! 1. спейсер создаётся ПЕРВЫМ (стабильнее получает правый слот);
+//! 2. контроллер по таймеру пересоздаёт застрявший на x=0 айтем (retry);
+//! 3. GUARD перед раздуванием требует оба x>0 и спейсер строго левее якоря —
+//!    иначе безопасный отказ (якорь не уезжает). Пользователь правит Cmd+drag.
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -66,6 +65,37 @@ pub struct StatusItems {
 pub unsafe fn create(mtm: MainThreadMarker, target: &AnyObject, lang: Lang) -> StatusItems {
     let bar = NSStatusBar::systemStatusBar();
 
+    // ИТЕРАЦИЯ 1: спейсер создаётся ПЕРВЫМ. macOS добавляет новые статус-айтемы
+    // слева от существующих; спейсер (fixed width) первым стабильно получает
+    // правый слот, якорь встаёт рядом. При обратном порядке (якорь первым)
+    // спейсер в ~50% запусков не получал слот и падал на x=0 (journal 004, T6).
+    let spacer = make_spacer(&bar, mtm, lang);
+    let anchor = make_anchor(&bar, mtm, target, lang);
+
+    StatusItems { anchor, spacer }
+}
+
+/// Создаёт спейсер (fixed width, символ cutter). Вынесено для переиспользования.
+unsafe fn make_spacer(bar: &NSStatusBar, mtm: MainThreadMarker, lang: Lang) -> Retained<NSStatusItem> {
+    let spacer = bar.statusItemWithLength(SPACER_WIDTH_SHOWN);
+    spacer.setAutosaveName(Some(&NSString::from_str(SPACER_AUTOSAVE)));
+    if let Some(button) = spacer.button(mtm) {
+        button.setToolTip(Some(&NSString::from_str(strings::cutter_tooltip(lang))));
+        set_button_symbol(&button, SPACER_SYMBOL);
+    }
+    crate::log::append(&format!(
+        "created spacer: autosave='{SPACER_AUTOSAVE}' length={SPACER_WIDTH_SHOWN} symbol='{SPACER_SYMBOL}'"
+    ));
+    spacer
+}
+
+/// Создаёт якорь `<` (variableLength, клик-обработчик). Вынесено для retry.
+unsafe fn make_anchor(
+    bar: &NSStatusBar,
+    mtm: MainThreadMarker,
+    target: &AnyObject,
+    lang: Lang,
+) -> Retained<NSStatusItem> {
     let anchor = bar.statusItemWithLength(NSVariableStatusItemLength);
     anchor.setAutosaveName(Some(&NSString::from_str(ANCHOR_AUTOSAVE)));
     if let Some(button) = anchor.button(mtm) {
@@ -82,18 +112,47 @@ pub unsafe fn create(mtm: MainThreadMarker, target: &AnyObject, lang: Lang) -> S
     } else {
         crate::log::append("WARNING: anchor button() returned nil — клик работать не будет");
     }
+    anchor
+}
 
-    let spacer = bar.statusItemWithLength(SPACER_WIDTH_SHOWN);
-    spacer.setAutosaveName(Some(&NSString::from_str(SPACER_AUTOSAVE)));
-    if let Some(button) = spacer.button(mtm) {
-        button.setToolTip(Some(&NSString::from_str(strings::cutter_tooltip(lang))));
-        set_button_symbol(&button, SPACER_SYMBOL);
-    }
-    crate::log::append(&format!(
-        "created spacer: autosave='{SPACER_AUTOSAVE}' length={SPACER_WIDTH_SHOWN} symbol='{SPACER_SYMBOL}'"
-    ));
+/// ИТЕРАЦИЯ 4-retry: пересоздаёт якорь, если он застрял на x=0. Старый айтем
+/// удаляется из бара, создаётся новый. Вызывается асинхронно из таймера контроллера
+/// (после возврата из didFinishLaunching — иначе координаты не размещаются).
+pub unsafe fn recreate_anchor(
+    items: &mut StatusItems,
+    mtm: MainThreadMarker,
+    target: &AnyObject,
+    lang: Lang,
+) {
+    let bar = NSStatusBar::systemStatusBar();
+    bar.removeStatusItem(&items.anchor);
+    crate::log::append("retry: удалил застрявший якорь, создаю заново");
+    items.anchor = make_anchor(&bar, mtm, target, lang);
+}
 
-    StatusItems { anchor, spacer }
+/// ИТЕРАЦИЯ 4b-retry: пересоздаёт спейсер, если застрял на x=0.
+pub unsafe fn recreate_spacer(items: &mut StatusItems, mtm: MainThreadMarker, lang: Lang) {
+    let bar = NSStatusBar::systemStatusBar();
+    bar.removeStatusItem(&items.spacer);
+    crate::log::append("retry: удалил застрявший спейсер, создаю заново");
+    items.spacer = make_spacer(&bar, mtm, lang);
+}
+
+/// ИТЕРАЦИЯ 7-эскалация: полный сброс композиции. Когда повторное пересоздание
+/// одного айтема не помогает (новый садится на тот же x=0), удаляем ОБА и создаём
+/// заново в правильном порядке — система перераскладывает слоты с нуля.
+pub unsafe fn recreate_both(
+    items: &mut StatusItems,
+    mtm: MainThreadMarker,
+    target: &AnyObject,
+    lang: Lang,
+) {
+    let bar = NSStatusBar::systemStatusBar();
+    bar.removeStatusItem(&items.spacer);
+    bar.removeStatusItem(&items.anchor);
+    crate::log::append("retry-эскалация: удалил ОБА айтема, пересоздаю композицию");
+    items.spacer = make_spacer(&bar, mtm, lang);
+    items.anchor = make_anchor(&bar, mtm, target, lang);
 }
 
 /// Ставит на кнопку якоря SF Symbol по имени. Используется контроллером при

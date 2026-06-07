@@ -17,9 +17,9 @@ use objc2::MainThreadMarker;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly, Message};
 use objc2::sel;
 use objc2_app_kit::{
-    NSApplication, NSApplicationDelegate, NSEventType, NSScreen,
+    NSApplication, NSApplicationDelegate, NSEventType, NSScreen, NSWindowDidMoveNotification,
 };
-use objc2_foundation::{NSNotification, NSPoint, NSTimer};
+use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint, NSTimer};
 
 use crate::auto_collapse::{self, MouseMonitor};
 use crate::status_bar::{
@@ -35,10 +35,20 @@ const HIDDEN_WIDTH_MIN: f64 = 500.0;
 const HIDDEN_WIDTH_MAX: f64 = 4000.0;
 const SCREEN_WIDTH_FALLBACK: f64 = 1728.0;
 
-/// Задержка перед стартовым авто-скрытием. Координаты айтемов доступны не сразу
-/// после запуска, а после стабилизации RunLoop — за 1с они уже валидны.
-// HARDCODE: задержка стартового авто-скрытия; вынести в конфиг позже.
-const STARTUP_HIDE_DELAY: f64 = 1.0;
+/// Интервал проверки размещения айтемов после старта. Размещение асинхронно;
+/// проверяем каждые 0.3с, пересоздавая застрявшие на x=0, пока оба не встанут.
+const PLACEMENT_CHECK_INTERVAL: f64 = 0.3;
+
+/// Максимум пересозданий одного айтема, если он застрял на x=0 (retry).
+const ANCHOR_MAX_RETRIES: u32 = 10;
+
+/// После стольких безуспешных проверок размещения — эскалация: пересоздать ОБА
+/// айтема (одиночное пересоздание иногда садится на тот же x=0, journal 006 итер.7).
+const PLACEMENT_ESCALATE_AFTER: u32 = 4;
+
+/// Полный потолок проверок размещения — затем сдаёмся и останавливаем таймер
+/// (защита от вечного таймера, если размещение не удаётся вообще).
+const PLACEMENT_MAX_ATTEMPTS: u32 = 30;
 
 /// Внутреннее состояние.
 /// - `items` появляются после запуска. `hidden`: текущий режим.
@@ -51,6 +61,15 @@ pub struct ControllerIvars {
     monitor: RefCell<Option<MouseMonitor>>,
     collapse_timer: RefCell<Option<Retained<NSTimer>>>,
     lang: Lang,
+    /// Сколько раз ещё можно пересоздать застрявший якорь (retry, итер.4).
+    anchor_retries: Cell<u32>,
+    /// Сколько раз ещё можно пересоздать застрявший спейсер (retry, итер.4b).
+    spacer_retries: Cell<u32>,
+    /// Сколько проверок размещения прошло без успеха (для эскалации, итер.7).
+    placement_attempts: Cell<u32>,
+    /// Стартовое авто-скрытие уже запущено? (защита от двойного вызова из
+    /// события NSWindowDidMove и fallback-таймера, итер.8).
+    placement_done: Cell<bool>,
 }
 
 define_class!(
@@ -74,21 +93,32 @@ define_class!(
             self.ivars().hidden.set(false);
             crate::log::append("айтемы созданы, состояние: показано (hidden=false)");
 
-            // Одноразовый таймер: через STARTUP_HIDE_DELAY попробовать авто-скрытие
-            // (координаты для guard к этому моменту уже стабильны).
+            // ОСНОВНОЙ триггер (journal 007): подписка на NSWindowDidMoveNotification.
+            // Система постит её, когда айтем получает реальную координату (x:0→1700).
+            // Ловим точное СОБЫТИЕ размещения вместо гадания по таймеру.
+            let target: &AnyObject = self.as_ref();
+            unsafe {
+                NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
+                    target,
+                    sel!(onWindowMoved:),
+                    Some(NSWindowDidMoveNotification),
+                    None,
+                );
+            }
+
+            // FALLBACK-таймер: если айтем ЗАЛИП на x=0 без события — пересоздаёт его
+            // (retry + эскалация). Размещение асинхронно, поэтому через таймер, а не
+            // синхронно (синхронная блокировка ломает размещение, journal 006).
             let target: &AnyObject = self.as_ref();
             unsafe {
                 NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-                    STARTUP_HIDE_DELAY,
+                    PLACEMENT_CHECK_INTERVAL,
                     target,
-                    sel!(onStartupTimer:),
+                    sel!(onPlacementCheck:),
                     None,
-                    false,
+                    true,
                 );
             }
-            crate::log::append(&format!(
-                "запланировано стартовое авто-скрытие через {STARTUP_HIDE_DELAY}с"
-            ));
         }
     }
 
@@ -122,16 +152,81 @@ define_class!(
             NSApplication::sharedApplication(self.mtm()).terminate(None);
         }
 
-        /// Сработал стартовый таймер: пытаемся спрятать, если ещё показаны.
-        /// `toggle` сам проверит guard и откажется, если порядок неверный.
-        #[unsafe(method(onStartupTimer:))]
-        fn on_startup_timer(&self, _timer: *mut AnyObject) {
-            crate::log::append("стартовый таймер: пробую авто-скрытие");
-            if self.ivars().hidden.get() {
-                crate::log::append("  уже скрыто — пропускаю");
+        /// ОСНОВНОЙ триггер: айтем получил/сменил позицию. Если оба размещены —
+        /// завершаем стартовую настройку (авто-скрытие). Это точное событие,
+        /// в отличие от поллинга по таймеру.
+        #[unsafe(method(onWindowMoved:))]
+        fn on_window_moved(&self, _notification: &NSNotification) {
+            self.finish_placement_if_ready("event");
+        }
+
+        /// Проверка размещения айтемов (периодическая, после старта).
+        /// Если айтем застрял на x=0 — пересоздаёт его (до лимита попыток).
+        /// Когда ОБА размещены — запускает стартовое авто-скрытие и останавливается.
+        /// Так первый toggle гарантированно идёт по валидным координатам.
+        #[unsafe(method(onPlacementCheck:))]
+        fn on_placement_check(&self, timer: *mut AnyObject) {
+            let mtm = self.mtm();
+            let (sx, ax) = {
+                let items_ref = self.ivars().items.borrow();
+                let Some(items) = items_ref.as_ref() else { return };
+                (
+                    status_bar::item_origin_x(&items.spacer, mtm),
+                    status_bar::item_origin_x(&items.anchor, mtm),
+                )
+            };
+            crate::log::append(&format!("placement: spacer.x={sx:?} anchor.x={ax:?}"));
+
+            let lang = self.ivars().lang;
+            let target: &AnyObject = self.as_ref();
+            let both_ok = sx.is_some() && sx != Some(0.0) && ax.is_some() && ax != Some(0.0);
+
+            // Оба размещены → общий финиш (событие могло уже его сделать) + стоп таймера.
+            if both_ok {
+                self.stop_placement_timer(timer);
+                self.finish_placement_if_ready("timer");
                 return;
             }
-            self.toggle();
+
+            // Не размещены. Считаем попытки; защита от вечного таймера.
+            let attempts = self.ivars().placement_attempts.get() + 1;
+            self.ivars().placement_attempts.set(attempts);
+            if attempts >= PLACEMENT_MAX_ATTEMPTS {
+                self.stop_placement_timer(timer);
+                crate::log::append("placement: лимит попыток исчерпан — сдаюсь (guard защитит)");
+                return;
+            }
+
+            // Эскалация: после нескольких безуспешных попыток одиночное пересоздание
+            // не помогает (новый айтем садится на тот же x=0) → пересоздать ОБА.
+            if attempts % PLACEMENT_ESCALATE_AFTER == 0 {
+                let mut items_ref = self.ivars().items.borrow_mut();
+                if let Some(items) = items_ref.as_mut() {
+                    unsafe { status_bar::recreate_both(items, mtm, target, lang) };
+                }
+                return;
+            }
+
+            // Обычный retry: пересоздать конкретный застрявший айтем.
+            if sx == Some(0.0) && self.ivars().spacer_retries.get() > 0 {
+                self.ivars()
+                    .spacer_retries
+                    .set(self.ivars().spacer_retries.get() - 1);
+                let mut items_ref = self.ivars().items.borrow_mut();
+                if let Some(items) = items_ref.as_mut() {
+                    unsafe { status_bar::recreate_spacer(items, mtm, lang) };
+                }
+                return;
+            }
+            if ax == Some(0.0) && self.ivars().anchor_retries.get() > 0 {
+                self.ivars()
+                    .anchor_retries
+                    .set(self.ivars().anchor_retries.get() - 1);
+                let mut items_ref = self.ivars().items.borrow_mut();
+                if let Some(items) = items_ref.as_mut() {
+                    unsafe { status_bar::recreate_anchor(items, mtm, target, lang) };
+                }
+            }
         }
 
         /// Движение мыши (от монитора). Работает только когда иконки показаны.
@@ -170,6 +265,10 @@ impl Controller {
             monitor: RefCell::new(None),
             collapse_timer: RefCell::new(None),
             lang: strings::detect(),
+            anchor_retries: Cell::new(ANCHOR_MAX_RETRIES),
+            spacer_retries: Cell::new(ANCHOR_MAX_RETRIES),
+            placement_attempts: Cell::new(0),
+            placement_done: Cell::new(false),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -215,6 +314,53 @@ impl Controller {
         }
     }
 
+    /// Останавливает таймер проверки размещения (по сырому указателю из колбэка).
+    fn stop_placement_timer(&self, timer: *mut AnyObject) {
+        if let Some(t) = unsafe { (timer as *const NSTimer).as_ref() } {
+            t.invalidate();
+        }
+    }
+
+    /// Завершает стартовую настройку, КОГДА оба айтема размещены (x>0).
+    /// Вызывается и из события NSWindowDidMove (основной триггер), и из
+    /// fallback-таймера. Идемпотентно: срабатывает один раз (флаг placement_done),
+    /// отписывается от нотификации и запускает стартовое авто-скрытие.
+    fn finish_placement_if_ready(&self, source: &str) {
+        if self.ivars().placement_done.get() {
+            return;
+        }
+        let mtm = self.mtm();
+        let (sx, ax) = {
+            let items_ref = self.ivars().items.borrow();
+            let Some(items) = items_ref.as_ref() else { return };
+            (
+                status_bar::item_origin_x(&items.spacer, mtm),
+                status_bar::item_origin_x(&items.anchor, mtm),
+            )
+        };
+        let both_ok = sx.is_some() && sx != Some(0.0) && ax.is_some() && ax != Some(0.0);
+        if !both_ok {
+            return;
+        }
+
+        self.ivars().placement_done.set(true);
+        // Отписываемся от событий перемещения — стартовая настройка завершена.
+        let observer: &AnyObject = self.as_ref();
+        unsafe {
+            NSNotificationCenter::defaultCenter().removeObserver_name_object(
+                observer,
+                Some(NSWindowDidMoveNotification),
+                None,
+            );
+        }
+        crate::log::append(&format!(
+            "placement готово [{source}]: spacer.x={sx:?} anchor.x={ax:?} — стартовое авто-скрытие"
+        ));
+        if !self.ivars().hidden.get() {
+            self.toggle();
+        }
+    }
+
     /// Запускает монитор мыши, если ещё не запущен.
     fn start_mouse_watch(&self) {
         if self.ivars().monitor.borrow().is_some() {
@@ -247,9 +393,10 @@ impl Controller {
         crate::log::append("авто-collapse: мышь ушла из полосы, взвёл таймер");
     }
 
-    /// Проверка порядка: левый край спейсера должен быть строго левее якоря.
-    /// Если координаты ещё недоступны — считаем порядок неверным (безопасный
-    /// отказ: лучше не спрятать, чем уронить якорь).
+    /// Проверка порядка: оба айтема размещены (x>0) И спейсер строго левее якоря.
+    /// Ужесточено: x==0 значит «не размещён», а НЕ «левее» — иначе раздувание от
+    /// нуля растягивало бы спейсер через весь экран и уносило якорь (journal 006).
+    /// Если координаты невалидны — безопасный отказ (лучше не спрятать, чем уронить).
     fn spacer_is_left_of_anchor(&self, items: &StatusItems) -> bool {
         let mtm = self.mtm();
         let spacer_x = status_bar::item_origin_x(&items.spacer, mtm);
@@ -257,11 +404,17 @@ impl Controller {
 
         match (spacer_x, anchor_x) {
             (Some(sx), Some(ax)) => {
-                let ok = sx < ax;
-                crate::log::append(&format!(
-                    "guard: spacer.x={sx} anchor.x={ax} → spacer {} anchor",
-                    if ok { "ЛЕВЕЕ ✓" } else { "ПРАВЕЕ ✗ (поправь Cmd+drag)" }
-                ));
+                // Оба должны быть размещены (x>0) и спейсер строго левее якоря.
+                let placed = sx > 0.0 && ax > 0.0;
+                let ok = placed && sx < ax;
+                let why = if ok {
+                    "ЛЕВЕЕ ✓"
+                } else if !placed {
+                    "НЕ РАЗМЕЩЁН (x=0) ✗"
+                } else {
+                    "ПРАВЕЕ ✗ (поправь Cmd+drag)"
+                };
+                crate::log::append(&format!("guard: spacer.x={sx} anchor.x={ax} → spacer {why} anchor"));
                 ok
             }
             _ => {
