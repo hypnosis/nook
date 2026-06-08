@@ -139,10 +139,11 @@ define_class!(
             }
         }
 
-        /// Пункт меню «О Nook» — пишем версию в лог (диалог — позже).
-        #[unsafe(method(onAbout:))]
-        fn on_about(&self, _sender: *mut AnyObject) {
-            crate::log::append(&format!("О Nook: версия {}", env!("CARGO_PKG_VERSION")));
+        /// Пункт меню «Запускать при входе» — переключает автозапуск.
+        /// Галочка обновится при следующем открытии меню (build читает статус).
+        #[unsafe(method(onToggleLogin:))]
+        fn on_toggle_login(&self, _sender: *mut AnyObject) {
+            crate::login::toggle();
         }
 
         /// Пункт меню «Выход» — завершаем приложение.
@@ -439,8 +440,11 @@ impl Controller {
         let target: &AnyObject = self.as_ref();
         let menu = unsafe { crate::menu::build(self.mtm(), target, self.ivars().lang) };
 
-        // Позиция под кнопкой: левый-нижний угол её bounds.
-        let origin = NSPoint::new(0.0, button.bounds().size.height + 4.0);
+        // Якорим меню к НИЖНЕЙ кромке кнопки, чтобы оно падало вниз, а не налезало
+        // на menu bar. NSStatusBarButton не flipped → y=0 это низ. При y>0 (над
+        // кнопкой) верх меню уходил под строку меню и первый пункт прятался под
+        // scroll-arrow. См. perplexity/AppKit: at = (midX, 0) в координатах кнопки.
+        let origin = NSPoint::new(0.0, 0.0);
         menu.popUpMenuPositioningItem_atLocation_inView(None, origin, Some(&button));
         crate::log::append("показано контекстное меню (правый клик)");
     }

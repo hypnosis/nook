@@ -25,11 +25,11 @@ pub fn detect() -> Lang {
     Lang::En
 }
 
-/// Пункт меню «О программе».
-pub fn menu_about(lang: Lang) -> &'static str {
+/// Пункт меню «Запускать при входе» (тумблер автозапуска).
+pub fn menu_login(lang: Lang) -> &'static str {
     match lang {
-        Lang::En => "About Nook",
-        Lang::Ru => "О Nook",
+        Lang::En => "Open at Login",
+        Lang::Ru => "Запускать при входе",
     }
 }
 

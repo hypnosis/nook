@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] - 2026-06-08
+
+### Added
+- "Open at Login" toggle in the context menu — registers/unregisters the app as a login item via the native `SMAppService.mainApp` API (no login helpers, no LaunchAgent plists). The checkmark reflects the current state. See ADR 009.
+
+### Changed
+- The context menu now shows the version (`Nook X.Y.Z`) as the top item, replacing the old "About" entry.
+- Removed the `⌘Q` shortcut from the Quit item — just "Quit" now.
+
+### Fixed
+- Context menu no longer overlaps the menu bar on first open (no more scroll-arrow `^` hiding the first item). The menu is anchored to the button's bottom edge so it drops downward. See ADR 010.
+
 ## [0.1.1] - 2026-06-05
 
 ### Fixed

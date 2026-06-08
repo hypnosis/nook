@@ -10,6 +10,7 @@
 mod auto_collapse;
 mod controller;
 mod log;
+mod login;
 mod menu;
 mod status_bar;
 mod strings;
