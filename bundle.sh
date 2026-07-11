@@ -36,9 +36,9 @@ cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
     <key>CFBundleExecutable</key>
     <string>nook</string>
     <key>CFBundleVersion</key>
-    <string>0.1.2</string>
+    <string>0.2.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.2</string>
+    <string>0.2.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleIconFile</key>
@@ -46,7 +46,7 @@ cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
     <key>LSUIElement</key>
     <true/>
     <key>LSMinimumSystemVersion</key>
-    <string>26.0</string>
+    <string>13.0</string>
 </dict>
 </plist>
 PLIST

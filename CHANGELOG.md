@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-07-11
+
+### Changed
+- Minimum supported macOS lowered from 26 (Tahoe) to **13 (Ventura)**. The app
+  now runs on macOS 13 and later. `LSMinimumSystemVersion` and the linker
+  deployment target are set to 13.0; all APIs used (NSStatusItem, SF Symbols,
+  `SMAppService.mainApp`) exist since macOS 13 or earlier.
+
 ## [0.1.2] - 2026-06-08
 
 ### Added

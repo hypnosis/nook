@@ -1,0 +1,5 @@
+[env]
+# Минимальная версия macOS для линковки. Держим 13.0 (Ventura) — нижняя граница,
+# где ещё есть SMAppService.mainApp (автозапуск, login.rs). Без этого линкер зашьёт
+# в Mach-O min-версию текущего SDK (Tahoe) и приложение не запустится на старых macOS.
+MACOSX_DEPLOYMENT_TARGET = "13.0"

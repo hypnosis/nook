@@ -8,5 +8,5 @@
 *.app/
 *.dmg
 nook-*.zip
-SHA256SUMS.txt
+SHA256SUMS*
 dmg-staging/
