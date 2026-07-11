@@ -1,6 +1,6 @@
 [package]
 name = "nook"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.95"
 description = "Hide extra menu bar icons on macOS. Native, lightweight, no hacks."
@@ -11,7 +11,7 @@ readme = "README.md"
 [dependencies]
 objc2 = "0.6.4"
 block2 = "0.6"
-objc2-foundation = { version = "0.3.2", features = ["NSTimer", "NSDate", "NSLocale", "NSArray", "NSString"] }
+objc2-foundation = { version = "0.3.2", features = ["NSTimer", "NSDate", "NSLocale", "NSArray", "NSString", "NSData"] }
 objc2-app-kit = { version = "0.3.2", features = [
     "NSApplication",
     "NSButton",

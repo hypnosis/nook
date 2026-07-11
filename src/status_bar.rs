@@ -23,11 +23,11 @@
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{sel, MainThreadMarker};
+use objc2::{sel, AnyThread, MainThreadMarker};
 use objc2_app_kit::{
     NSEventMask, NSImage, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
 };
-use objc2_foundation::NSString;
+use objc2_foundation::{NSData, NSSize, NSString};
 
 use crate::strings::{self, Lang};
 
@@ -155,12 +155,26 @@ pub unsafe fn recreate_both(
     items.anchor = make_anchor(&bar, mtm, target, lang);
 }
 
+/// Составная template-иконка blocked-состояния (шеврон `<` + `⚠` внахлёст).
+/// Вшита в бинарь; собирается пайплайном `assets/blocked-icon/build.sh`.
+const BLOCKED_ICON_PNG: &[u8] = include_bytes!("blocked.png");
+/// Логический размер blocked-иконки в pt (PNG отрендерен @2x: 42×30px → 21×15pt).
+const BLOCKED_ICON_SIZE: NSSize = NSSize::new(21.0, 15.0);
+
 /// Ставит на кнопку якоря SF Symbol по имени. Используется контроллером при
-/// смене состояния (показано/скрыто/заблокировано).
+/// смене состояния (показано/скрыто/заблокировано). Для blocked-состояния
+/// вместо одиночного символа ставит составную template-иконку `< ⚠`.
 pub fn set_anchor_symbol(items: &StatusItems, mtm: MainThreadMarker, symbol_name: &str) {
-    if let Some(button) = items.anchor.button(mtm) {
-        set_button_symbol(&button, symbol_name);
+    let Some(button) = items.anchor.button(mtm) else {
+        return;
+    };
+    if symbol_name == ANCHOR_SYMBOL_BLOCKED {
+        if set_button_blocked_icon(&button) {
+            return;
+        }
+        // fallback: вшитый PNG не распарсился — ставим системный треугольник.
     }
+    set_button_symbol(&button, symbol_name);
 }
 
 /// Загружает системный SF Symbol и ставит его картинкой на кнопку. Если символа
@@ -172,6 +186,32 @@ fn set_button_symbol(button: &objc2_app_kit::NSStatusBarButton, symbol_name: &st
         None => crate::log::append(&format!(
             "WARNING: SF Symbol '{symbol_name}' не найден в системе"
         )),
+    }
+}
+
+/// Ставит на кнопку составную blocked-иконку из вшитого PNG. Template — macOS
+/// сама красит под тему. `true` при успехе, `false` если PNG не распарсился
+/// (тогда вызывающий откатывается на системный `exclamationmark.triangle`).
+fn set_button_blocked_icon(button: &objc2_app_kit::NSStatusBarButton) -> bool {
+    // SAFETY: BLOCKED_ICON_PNG живёт всю программу (static); dataWithBytes_length
+    // копирует байты внутрь NSData, так что переживать за время жизни не нужно.
+    let data = unsafe {
+        NSData::dataWithBytes_length(
+            BLOCKED_ICON_PNG.as_ptr() as *mut _,
+            BLOCKED_ICON_PNG.len(),
+        )
+    };
+    match NSImage::initWithData(NSImage::alloc(), &data) {
+        Some(image) => {
+            image.setSize(BLOCKED_ICON_SIZE);
+            image.setTemplate(true);
+            button.setImage(Some(&image));
+            true
+        }
+        None => {
+            crate::log::append("WARNING: blocked-иконка (blocked.png) не распарсилась");
+            false
+        }
     }
 }
 

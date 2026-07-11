@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-07-12
+
+### Added
+- Blocked-state anchor icon: when hiding is blocked (spacer not left of the anchor, wrong order), the anchor now shows a composite `‹ ⚠` icon — a chevron with an overlapping warning triangle — instead of a bare `⚠`. Built from two real SF Symbols as a template image, so it follows the menu bar theme. Pipeline in `assets/blocked-icon/`.
+
 ## [0.2.0] - 2026-07-11
 
 ### Changed
