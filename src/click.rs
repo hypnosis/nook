@@ -7,65 +7,132 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use objc2_app_kit::NSWorkspace;
-use objc2_application_services::{AXIsProcessTrusted, AXUIElement, AXValue, AXValueType};
-use objc2_core_foundation::{CFArray, CFRetained, CFString, CFType, CGPoint, CGSize};
-use objc2_core_graphics::CGRequestPostEventAccess;
+use objc2_application_services::{
+    AXIsProcessTrusted, AXIsProcessTrustedWithOptions, AXUIElement, AXValue, AXValueType,
+};
+use objc2_core_foundation::{
+    CFArray, CFDictionary, CFRetained, CFString, CFType, CGPoint, CGSize,
+};
+use objc2_foundation::{NSDictionary, NSNumber, NSString};
 
 /// Насколько центр элемента Accessibility может отличаться от центра окна иконки, pt.
-// HARDCODE: допуск сопоставления иконки; вынести в конфиг позже.
+// HARDCODE: допуск сопоставления иконки и таймаут опроса приложения; вынести в конфиг позже.
 const MATCH_TOLERANCE: f64 = 6.0;
-const AX_TIMEOUT: f32 = 0.5;
+const AX_TIMEOUT: f32 = 0.1;
 
-/// Номер окна иконки → pid приложения, которому она принадлежит. Заполняется при открытии панели.
-static OWNERS: Mutex<Option<HashMap<u32, i32>>> = Mutex::new(None);
+/// Иконка строки меню в Accessibility: приложение-владелец и сам элемент.
+struct AxItem {
+    pid: i32,
+    element: CFRetained<AXUIElement>,
+}
 
-/// В фоне запоминает владельцев окон панели, чтобы клик спрашивал одно приложение, а не все.
+// SAFETY: AXUIElement — неизменяемая CF-ссылка, вызовы Accessibility допустимы из любого потока.
+unsafe impl Send for AxItem {}
+
+/// Номер окна иконки → её элемент. Номер окна не меняется, пока приложение запущено,
+/// поэтому кэш живёт всё время работы Nook и дополняется только новыми окнами.
+static CACHE: Mutex<Option<HashMap<u32, AxItem>>> = Mutex::new(None);
+
+/// В фоне находит элементы для окон панели, которых ещё нет в кэше.
 pub fn remember_owners(ids: Vec<u32>) {
+    let missing: Vec<u32> = {
+        let cache = CACHE.lock().unwrap();
+        ids.into_iter()
+            .filter(|id| cache.as_ref().is_none_or(|c| !c.contains_key(id)))
+            .collect()
+    };
+    if missing.is_empty() {
+        return;
+    }
     let pids = running_pids();
     std::thread::spawn(move || {
-        let mut owners = HashMap::new();
-        for id in ids {
-            let Some(center) = window_center(id) else { continue };
-            if let Some((pid, _)) = find_item(&pids, center) {
-                owners.insert(id, pid);
-            }
-        }
-        crate::log::append(&format!("click: владельцы окон {owners:?}"));
-        *OWNERS.lock().unwrap() = Some(owners);
+        let started = Instant::now();
+        let found = match_windows(&missing, &pids);
+        let mut cache = CACHE.lock().unwrap();
+        let cache = cache.get_or_insert_with(HashMap::new);
+        let count = found.len();
+        cache.extend(found);
+        crate::log::append(&format!(
+            "click: кэш +{count} из {} за {} мс, всего {}",
+            missing.len(),
+            started.elapsed().as_millis(),
+            cache.len()
+        ));
     });
 }
 
-/// Нажимает настоящую иконку, чьё окно — `id`. AXPress ждёт закрытия меню,
+/// Нажимает настоящую иконку, чьё окно — `id`. AXPress ждёт ответа приложения,
 /// поэтому поиск и нажатие идут в фоновом потоке.
 pub fn click_window(id: u32) {
     if !unsafe { AXIsProcessTrusted() } {
         crate::log::append("click: нет права Accessibility — запрашиваю");
-        CGRequestPostEventAccess();
+        request_accessibility();
         return;
     }
-    let Some(center) = window_center(id) else {
-        crate::log::append(&format!("click: окна {id} больше нет"));
-        return;
-    };
-    let owner = OWNERS.lock().unwrap().as_ref().and_then(|owners| owners.get(&id).copied());
-    let pids = owner.map_or_else(running_pids, |pid| vec![pid]);
-
+    let pids = running_pids();
     std::thread::spawn(move || {
-        let started = std::time::Instant::now();
-        let Some((pid, item)) = find_item(&pids, center) else {
-            crate::log::append(&format!("click: для окна {id} (центр {center}) иконки в AX нет"));
+        let started = Instant::now();
+        let cached = CACHE.lock().unwrap().as_mut().and_then(|cache| cache.remove(&id));
+        let from_cache = cached.is_some();
+        let item = cached.or_else(|| match_windows(&[id], &pids).into_iter().next().map(|(_, item)| item));
+        let Some(item) = item else {
+            crate::log::append(&format!("click: для окна {id} иконки в AX нет"));
             return;
         };
+        let found_ms = started.elapsed().as_millis();
+        let result = unsafe { item.element.perform_action(&CFString::from_static_str("AXPress")) };
         crate::log::append(&format!(
-            "click: окно {id} → pid {pid} (кэш {}) за {} мс, AXPress",
-            owner.is_some(),
-            started.elapsed().as_millis()
+            "click: окно {id} pid {} (кэш {from_cache}) найдено за {found_ms} мс, AXPress → {} за {} мс",
+            item.pid,
+            result.0,
+            started.elapsed().as_millis() - found_ms
         ));
-        let result = unsafe { item.perform_action(&CFString::from_static_str("AXPress")) };
-        crate::log::append(&format!("click: AXPress pid {pid} → {}", result.0));
+        CACHE.lock().unwrap().get_or_insert_with(HashMap::new).insert(id, item);
     });
+}
+
+/// Один проход по всем приложениям: каждому окну — элемент с ближайшим центром x.
+fn match_windows(ids: &[u32], pids: &[i32]) -> Vec<(u32, AxItem)> {
+    let centers: Vec<(u32, f64)> = ids.iter().filter_map(|&id| Some((id, window_center(id)?))).collect();
+    let mut items = all_items(pids);
+    let mut matched = Vec::new();
+    for (id, center) in centers {
+        let best = items
+            .iter()
+            .enumerate()
+            .map(|(index, (item_center, _))| (index, (item_center - center).abs()))
+            .filter(|(_, distance)| *distance <= MATCH_TOLERANCE)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((index, _)) = best {
+            matched.push((id, items.swap_remove(index).1));
+        }
+    }
+    matched
+}
+
+/// Все иконки строки меню всех приложений с центрами x.
+fn all_items(pids: &[i32]) -> Vec<(f64, AxItem)> {
+    let mut items = Vec::new();
+    for &pid in pids {
+        let app = unsafe { AXUIElement::new_application(pid) };
+        unsafe { app.set_messaging_timeout(AX_TIMEOUT) };
+        let Some(bar) = attribute(&app, "AXExtrasMenuBar") else { continue };
+        let Some(bar) = bar.downcast::<AXUIElement>().ok() else { continue };
+        let Some(children) = attribute(&bar, "AXChildren") else { continue };
+        let Some(children) = children.downcast::<CFArray>().ok() else { continue };
+        for index in 0..children.count() {
+            let item = unsafe { children.value_at_index(index) } as *mut AXUIElement;
+            let Some(item) = NonNull::new(item) else { continue };
+            let element = unsafe { CFRetained::retain(item) };
+            if let Some(center) = center_x(&element) {
+                items.push((center, AxItem { pid, element }));
+            }
+        }
+    }
+    items
 }
 
 fn window_center(id: u32) -> Option<f64> {
@@ -80,28 +147,15 @@ fn running_pids() -> Vec<i32> {
         .collect()
 }
 
-/// Иконка строки меню любого приложения, чей центр x ближе всего к `center`.
-fn find_item(pids: &[i32], center: f64) -> Option<(i32, CFRetained<AXUIElement>)> {
-    let mut best: Option<(f64, i32, CFRetained<AXUIElement>)> = None;
-    for &pid in pids {
-        let app = unsafe { AXUIElement::new_application(pid) };
-        unsafe { app.set_messaging_timeout(AX_TIMEOUT) };
-        let Some(bar) = attribute(&app, "AXExtrasMenuBar") else { continue };
-        let Some(bar) = bar.downcast::<AXUIElement>().ok() else { continue };
-        let Some(children) = attribute(&bar, "AXChildren") else { continue };
-        let Some(children) = children.downcast::<CFArray>().ok() else { continue };
-        for index in 0..children.count() {
-            let item = unsafe { children.value_at_index(index) } as *const AXUIElement;
-            let Some(item) = NonNull::new(item as *mut AXUIElement) else { continue };
-            let item = unsafe { CFRetained::retain(item) };
-            let Some(item_center) = center_x(&item) else { continue };
-            let distance = (item_center - center).abs();
-            if distance <= MATCH_TOLERANCE && best.as_ref().is_none_or(|b| distance < b.0) {
-                best = Some((distance, pid, item));
-            }
-        }
-    }
-    best.map(|(_, pid, item)| (pid, item))
+/// Показывает системный запрос права Accessibility («Универсальный доступ»).
+fn request_accessibility() {
+    let options = NSDictionary::from_slices(
+        &[&*NSString::from_str("AXTrustedCheckOptionPrompt")],
+        &[&*NSNumber::new_bool(true)],
+    );
+    // NSDictionary бесшовно приводится к CFDictionary.
+    let options: &CFDictionary = unsafe { &*(&*options as *const NSDictionary<NSString, NSNumber> as *const CFDictionary) };
+    unsafe { AXIsProcessTrustedWithOptions(Some(options)) };
 }
 
 fn attribute(element: &AXUIElement, name: &'static str) -> Option<CFRetained<CFType>> {
