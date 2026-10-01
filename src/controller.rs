@@ -17,11 +17,15 @@ use objc2::MainThreadMarker;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly, Message};
 use objc2::sel;
 use objc2_app_kit::{
-    NSApplication, NSApplicationDelegate, NSEventType, NSScreen, NSWindowDidMoveNotification,
+    NSApplication, NSApplicationDelegate, NSButton, NSEventType, NSImage, NSScreen,
+    NSWindowDidMoveNotification,
 };
-use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint, NSTimer};
+use objc2_foundation::{
+    NSArray, NSNotification, NSNotificationCenter, NSNumber, NSPoint, NSTimer,
+};
 
 use crate::auto_collapse::{self, MouseMonitor};
+use crate::panel::Panel;
 use crate::status_bar::{
     self, StatusItems, ANCHOR_SYMBOL_BLOCKED, ANCHOR_SYMBOL_HIDDEN, ANCHOR_SYMBOL_SHOWN,
     SPACER_WIDTH_SHOWN,
@@ -50,6 +54,10 @@ const PLACEMENT_ESCALATE_AFTER: u32 = 4;
 /// (защита от вечного таймера, если размещение не удаётся вообще).
 const PLACEMENT_MAX_ATTEMPTS: u32 = 30;
 
+/// Пауза после раскрытия, чтобы окна иконок встали на места перед съёмкой.
+// HARDCODE: задержка съёмки иконок; вынести в конфиг позже.
+const PANEL_CAPTURE_DELAY: f64 = 0.3;
+
 /// Внутреннее состояние.
 /// - `items` появляются после запуска. `hidden`: текущий режим.
 /// - `monitor` следит за мышью, пока иконки показаны (для автосворачивания).
@@ -70,6 +78,7 @@ pub struct ControllerIvars {
     /// Стартовое авто-скрытие уже запущено? (защита от двойного вызова из
     /// события NSWindowDidMove и fallback-таймера, итер.8).
     placement_done: Cell<bool>,
+    panel: RefCell<Option<Panel>>,
 }
 
 define_class!(
@@ -237,11 +246,35 @@ define_class!(
             if self.ivars().hidden.get() {
                 return; // показывать нечего — следить незачем
             }
-            if auto_collapse::mouse_in_menu_bar_strip(self.mtm()) {
+            if auto_collapse::mouse_in_menu_bar_strip(self.mtm()) || self.mouse_in_panel() {
                 self.cancel_collapse_timer();
             } else if self.ivars().collapse_timer.borrow().is_none() {
                 self.arm_collapse_timer();
             }
+        }
+
+        /// Окна иконок встали после раскрытия — снимаем те, что ушли под чёлку.
+        #[unsafe(method(onPanelCapture:))]
+        fn on_panel_capture(&self, _timer: *mut AnyObject) {
+            if !self.ivars().hidden.get() {
+                crate::capture::capture_under_notch();
+            }
+        }
+
+        /// Снимки иконок под чёлкой готовы.
+        #[unsafe(method(setPanelIcons:ids:))]
+        fn set_panel_icons(&self, images: &NSArray<NSImage>, ids: &NSArray<NSNumber>) {
+            let target: &AnyObject = self.as_ref();
+            if let Some(panel) = self.ivars().panel.borrow().as_ref() {
+                panel.set_icons(self.mtm(), target, images, ids);
+            }
+            crate::click::remember_owners(ids.iter().map(|id| id.unsignedIntValue()).collect());
+        }
+
+        /// Клик по клону в панели — нажимаем настоящую иконку под чёлкой.
+        #[unsafe(method(onCloneClick:))]
+        fn on_clone_click(&self, sender: &NSButton) {
+            crate::click::click_window(sender.tag() as u32);
         }
 
         /// Таймер коллапса дожил: мышь была вне полоса COLLAPSE_DELAY секунд.
@@ -270,6 +303,7 @@ impl Controller {
             spacer_retries: Cell::new(ANCHOR_MAX_RETRIES),
             placement_attempts: Cell::new(0),
             placement_done: Cell::new(false),
+            panel: RefCell::new(None),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -313,6 +347,38 @@ impl Controller {
         } else {
             self.start_mouse_watch();
         }
+        self.sync_panel(items, going_to_hide);
+    }
+
+    /// Панель открыта ровно тогда, когда иконки раскрыты.
+    fn sync_panel(&self, items: &StatusItems, hidden: bool) {
+        let mut panel = self.ivars().panel.borrow_mut();
+        if hidden {
+            if let Some(panel) = panel.as_ref() {
+                panel.hide();
+            }
+            return;
+        }
+        let Some(anchor_window) = items.anchor.button(self.mtm()).and_then(|b| b.window()) else {
+            return;
+        };
+        panel
+            .get_or_insert_with(|| Panel::new(self.mtm()))
+            .show_below(&anchor_window);
+        let target: &AnyObject = self.as_ref();
+        unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                PANEL_CAPTURE_DELAY,
+                target,
+                sel!(onPanelCapture:),
+                None,
+                false,
+            );
+        }
+    }
+
+    fn mouse_in_panel(&self) -> bool {
+        self.ivars().panel.borrow().as_ref().is_some_and(Panel::contains_mouse)
     }
 
     /// Останавливает таймер проверки размещения (по сырому указателю из колбэка).

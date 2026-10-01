@@ -8,10 +8,13 @@
 //! Cmd+drag один раз — порядок переживает перезапуск.
 
 mod auto_collapse;
+mod capture;
+mod click;
 mod controller;
 mod log;
 mod login;
 mod menu;
+mod panel;
 mod status_bar;
 mod strings;
 
