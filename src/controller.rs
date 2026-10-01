@@ -57,6 +57,9 @@ const PLACEMENT_MAX_ATTEMPTS: u32 = 30;
 /// Пауза после раскрытия, чтобы окна иконок встали на места перед съёмкой.
 // HARDCODE: задержка съёмки иконок; вынести в конфиг позже.
 const PANEL_CAPTURE_DELAY: f64 = 0.3;
+/// Как часто обновлять клоны, пока панель открыта.
+// HARDCODE: период обновления клонов; вынести в конфиг позже.
+const PANEL_REFRESH_INTERVAL: f64 = 2.0;
 
 /// Внутреннее состояние.
 /// - `items` появляются после запуска. `hidden`: текущий режим.
@@ -79,6 +82,8 @@ pub struct ControllerIvars {
     /// события NSWindowDidMove и fallback-таймера, итер.8).
     placement_done: Cell<bool>,
     panel: RefCell<Option<Panel>>,
+    /// Таймер обновления клонов: живёт только пока панель открыта.
+    panel_refresh_timer: RefCell<Option<Retained<NSTimer>>>,
 }
 
 define_class!(
@@ -304,6 +309,7 @@ impl Controller {
             placement_attempts: Cell::new(0),
             placement_done: Cell::new(false),
             panel: RefCell::new(None),
+            panel_refresh_timer: RefCell::new(None),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -357,6 +363,9 @@ impl Controller {
             if let Some(panel) = panel.as_ref() {
                 panel.hide();
             }
+            if let Some(timer) = self.ivars().panel_refresh_timer.borrow_mut().take() {
+                timer.invalidate();
+            }
             return;
         }
         let Some(anchor_window) = items.anchor.button(self.mtm()).and_then(|b| b.window()) else {
@@ -374,6 +383,18 @@ impl Controller {
                 None,
                 false,
             );
+        }
+        let refresh = unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                PANEL_REFRESH_INTERVAL,
+                target,
+                sel!(onPanelCapture:),
+                None,
+                true,
+            )
+        };
+        if let Some(old) = self.ivars().panel_refresh_timer.borrow_mut().replace(refresh) {
+            old.invalidate();
         }
     }
 
