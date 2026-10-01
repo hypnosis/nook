@@ -22,11 +22,20 @@ const CONTROL_CENTER_BUNDLE: &str = "com.apple.controlcenter";
 // HARDCODE: предел высоты окна иконки строки меню; вынести в конфиг позже.
 const MAX_ICON_HEIGHT: f64 = 50.0;
 
-/// Окно иконки строки меню: номер CG-окна и размер в pt.
-struct IconWindow {
-    id: u32,
-    width: f64,
-    height: f64,
+/// Окно иконки строки меню: номер CG-окна, левый край и размер в pt, нарисовано ли.
+pub struct IconWindow {
+    pub id: u32,
+    pub x: f64,
+    pub width: f64,
+    pub height: f64,
+    pub onscreen: bool,
+}
+
+/// Кому отдать готовые снимки.
+#[derive(Clone, Copy)]
+enum Receiver {
+    Panel,
+    Editor,
 }
 
 /// Готовый снимок, передаётся из потока ScreenCaptureKit в главный поток.
@@ -39,28 +48,46 @@ struct Shot {
 
 /// Снимает иконки под чёлкой и по готовности отдаёт их делегату приложения
 /// через `setPanelIcons:ids:` (картинки и номера их окон, слева направо).
-/// Сразу возвращает номера окон, которые снимаются.
-pub fn capture_under_notch() -> Vec<u32> {
-    let windows = under_notch_windows();
-    let ids: Vec<u32> = windows.iter().map(|w| w.id).collect();
+/// Сразу возвращает номера окон, которые снимаются. `own_id` — своё окно
+/// (разделитель панели), его не снимаем.
+pub fn capture_under_notch(own_id: Option<u32>) -> Vec<u32> {
+    let windows = icon_windows(|w| w.x >= 0.0 && !w.onscreen && Some(w.id) != own_id);
     crate::log::append(&format!(
         "capture: под чёлкой окон {}: {:?}",
         windows.len(),
         windows.iter().map(|w| w.id).collect::<Vec<_>>()
     ));
+    capture(windows, Receiver::Panel)
+}
+
+/// Снимает все иконки левее `limit_x` (левый край ≡◂) для редактора и отдаёт их
+/// делегату через `setEditorIcons:ids:`. `own_id` — как в `capture_under_notch`.
+pub fn capture_left_of(limit_x: f64, own_id: Option<u32>) {
+    let windows = icon_windows(|w| w.x >= 0.0 && w.x < limit_x - 1.0 && Some(w.id) != own_id);
+    crate::log::append(&format!("capture: для редактора окон {}", windows.len()));
+    capture(windows, Receiver::Editor);
+}
+
+/// Все окна иконок строки меню слева направо.
+pub fn icon_layout() -> Vec<IconWindow> {
+    icon_windows(|_| true)
+}
+
+fn capture(windows: Vec<IconWindow>, receiver: Receiver) -> Vec<u32> {
+    let ids: Vec<u32> = windows.iter().map(|w| w.id).collect();
     if windows.is_empty() {
-        deliver(Vec::new());
+        deliver(Vec::new(), receiver);
         return ids;
     }
 
     let handler = RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
         let Some(content) = (unsafe { Retained::retain(content) }) else {
             log_error("SCShareableContent", error);
-            deliver(Vec::new());
+            deliver(Vec::new(), receiver);
             return;
         };
         crate::log::append("capture: список ScreenCaptureKit получен");
-        capture_windows(&content, &windows);
+        capture_windows(&content, &windows, receiver);
     });
     unsafe {
         SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(
@@ -71,7 +98,7 @@ pub fn capture_under_notch() -> Vec<u32> {
 }
 
 /// Каждое окно — отдельным фильтром: несколько окон в одном фильтре дают −3811.
-fn capture_windows(content: &SCShareableContent, windows: &[IconWindow]) {
+fn capture_windows(content: &SCShareableContent, windows: &[IconWindow], receiver: Receiver) {
     let shareable = unsafe { content.windows() };
     let results: Arc<Mutex<(Vec<Option<Shot>>, usize)>> =
         Arc::new(Mutex::new(((0..windows.len()).map(|_| None).collect(), windows.len())));
@@ -79,7 +106,7 @@ fn capture_windows(content: &SCShareableContent, windows: &[IconWindow]) {
     for (index, icon) in windows.iter().enumerate() {
         let Some(window) = shareable.iter().find(|w| unsafe { w.windowID() } == icon.id) else {
             crate::log::append(&format!("capture: окна {} нет в ScreenCaptureKit", icon.id));
-            finish_one(&results, index, None);
+            finish_one(&results, index, None, receiver);
             continue;
         };
         let filter = unsafe {
@@ -106,7 +133,7 @@ fn capture_windows(content: &SCShareableContent, windows: &[IconWindow]) {
             if shot.is_none() {
                 log_error(&format!("окно {id}"), error);
             }
-            finish_one(&results, index, shot);
+            finish_one(&results, index, shot, receiver);
         });
         unsafe {
             SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(
@@ -118,17 +145,22 @@ fn capture_windows(content: &SCShareableContent, windows: &[IconWindow]) {
     }
 }
 
-fn finish_one(results: &Arc<Mutex<(Vec<Option<Shot>>, usize)>>, index: usize, shot: Option<Shot>) {
+fn finish_one(
+    results: &Arc<Mutex<(Vec<Option<Shot>>, usize)>>,
+    index: usize,
+    shot: Option<Shot>,
+    receiver: Receiver,
+) {
     let mut guard = results.lock().unwrap();
     guard.0[index] = shot;
     guard.1 -= 1;
     if guard.1 == 0 {
-        deliver(guard.0.drain(..).flatten().collect());
+        deliver(guard.0.drain(..).flatten().collect(), receiver);
     }
 }
 
 /// Переносит снимки в главный поток и отдаёт делегату приложения.
-fn deliver(shots: Vec<Shot>) {
+fn deliver(shots: Vec<Shot>, receiver: Receiver) {
     DispatchQueue::main().exec_async(move || {
         let mtm = MainThreadMarker::new().expect("main queue");
         let images: Vec<Retained<NSImage>> = shots
@@ -148,13 +180,16 @@ fn deliver(shots: Vec<Shot>) {
         let ids = NSArray::from_retained_slice(&ids);
         if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
             let delegate: &AnyObject = delegate.as_ref();
-            let _: () = unsafe { msg_send![delegate, setPanelIcons: &*images, ids: &*ids] };
+            let _: () = match receiver {
+                Receiver::Panel => unsafe { msg_send![delegate, setPanelIcons: &*images, ids: &*ids] },
+                Receiver::Editor => unsafe { msg_send![delegate, setEditorIcons: &*images, ids: &*ids] },
+            };
         }
     });
 }
 
-/// Окна иконок ControlCenter, которые стоят на экране (x ≥ 0), но не нарисованы — они под чёлкой.
-fn under_notch_windows() -> Vec<IconWindow> {
+/// Окна иконок ControlCenter слева направо, которые проходят `keep`.
+fn icon_windows(keep: impl Fn(&IconWindow) -> bool) -> Vec<IconWindow> {
     let Some(owner_pid) = control_center_pid() else {
         crate::log::append("capture: ControlCenter не найден");
         return Vec::new();
@@ -182,7 +217,8 @@ fn under_notch_windows() -> Vec<IconWindow> {
                 && y == 0.0
                 && height <= MAX_ICON_HEIGHT
                 && !name.contains("Clone");
-            (is_icon && x >= 0.0 && !onscreen).then_some((x, IconWindow { id, width, height }))
+            let window = IconWindow { id, x, width, height, onscreen };
+            (is_icon && keep(&window)).then_some((x, window))
         })
         .collect();
     windows.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -237,7 +273,7 @@ fn number(info: &NSDictionary<NSString, AnyObject>, key: &str) -> Option<Retaine
     info.objectForKey(&NSString::from_str(key))?.downcast::<NSNumber>().ok()
 }
 
-fn control_center_pid() -> Option<i32> {
+pub fn control_center_pid() -> Option<i32> {
     let apps = NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(
         CONTROL_CENTER_BUNDLE,
     ));

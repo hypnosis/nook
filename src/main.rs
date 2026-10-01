@@ -11,10 +11,14 @@ mod auto_collapse;
 mod capture;
 mod click;
 mod controller;
+mod divider;
+mod editor;
 mod log;
 mod login;
 mod menu;
+mod mover;
 mod panel;
+mod settings;
 mod status_bar;
 mod strings;
 

@@ -11,10 +11,32 @@ readme = "README.md"
 [dependencies]
 objc2 = "0.6.4"
 block2 = "0.6"
-objc2-foundation = { version = "0.3.2", features = ["NSTimer", "NSDate", "NSLocale", "NSArray", "NSString", "NSData", "NSDictionary", "NSValue", "NSError", "NSEnumerator"] }
+objc2-foundation = { version = "0.3.2", features = ["NSTimer", "NSDate", "NSLocale", "NSArray", "NSString", "NSData", "NSDictionary", "NSValue", "NSError", "NSEnumerator", "NSURL", "NSGeometry", "NSNotification", "NSUserDefaults", "NSIndexSet", "NSObjCRuntime"] }
 objc2-app-kit = { version = "0.3.2", features = [
     "NSApplication",
     "NSButton",
+    "NSBox",
+    "NSFont",
+    "NSGridView",
+    "NSImageView",
+    "NSLayoutAnchor",
+    "NSProgressIndicator",
+    "NSCell",
+    "NSLayoutConstraint",
+    "NSScrollView",
+    "NSSplitViewController",
+    "NSSplitViewItem",
+    "NSStackView",
+    "NSSwitch",
+    "NSTableCellView",
+    "NSTableColumn",
+    "NSTableView",
+    "NSText",
+    "NSTextField",
+    "NSUserInterfaceLayout",
+    "NSViewController",
+    "NSClipView",
+    "NSSplitView",
     "NSControl",
     "NSEvent",
     "NSImage",
@@ -37,7 +59,7 @@ objc2-app-kit = { version = "0.3.2", features = [
 ] }
 objc2-core-foundation = "*"
 objc2-service-management = { version = "0.3.2", features = ["SMAppService"] }
-objc2-core-graphics = { version = "0.3", features = ["CGWindow", "CGImage", "CGGeometry", "CGEvent", "CGEventTypes"] }
+objc2-core-graphics = { version = "0.3", features = ["CGWindow", "CGImage", "CGGeometry", "CGEvent", "CGEventTypes", "CGDirectDisplay", "CGError", "CGRemoteOperation"] }
 objc2-screen-capture-kit = { version = "0.3", features = ["SCShareableContent", "SCScreenshotManager", "SCStream", "block2", "objc2-core-graphics"] }
 dispatch2 = "0.3"
 objc2-application-services = { version = "0.3", features = ["AXUIElement", "AXValue", "AXError", "HIServices"] }

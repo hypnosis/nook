@@ -15,11 +15,11 @@ use objc2_foundation::NSString;
 
 use crate::strings::{self, Lang};
 
-/// Строит контекстное меню: версия · разделитель ·
+/// Строит контекстное меню: версия · разделитель · «Настройки…» · разделитель ·
 /// «Запускать при входе» (тумблер) · разделитель · «Выход».
 /// Строки локализованы по `lang`.
 ///
-/// `target` — контроллер с методами `onToggleLogin:` и `onQuit:`.
+/// `target` — контроллер с методами `onOpenSettings:`, `onToggleLogin:` и `onQuit:`.
 ///
 /// # Safety
 /// `target` должен жить, пока показывается меню, и реализовывать оба селектора.
@@ -33,6 +33,11 @@ pub unsafe fn build(mtm: MainThreadMarker, target: &AnyObject, lang: Lang) -> Re
     let version_item = NSMenuItem::new(mtm);
     version_item.setTitle(&NSString::from_str(&version));
     menu.addItem(&version_item);
+
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
+
+    let settings = item(mtm, strings::menu_settings(lang), sel!(onOpenSettings:), ",", target);
+    menu.addItem(&settings);
 
     menu.addItem(&NSMenuItem::separatorItem(mtm));
 
