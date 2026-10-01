@@ -30,8 +30,12 @@ const FAST_STEP: Duration = Duration::from_millis(12);
 const SAFE_STEP: Duration = Duration::from_millis(50);
 const SETTLE_TIMEOUT: Duration = Duration::from_millis(250);
 const SETTLE_POLL: Duration = Duration::from_millis(5);
-const STILL_POLL: Duration = Duration::from_millis(30);
+const STILL_POLL: Duration = Duration::from_millis(10);
+/// Сколько замеров подряд без изменений считать концом анимации.
+const STILL_READS: u32 = 2;
 const STILL_TIMEOUT: Duration = Duration::from_millis(600);
+/// Сколько добивочных проходов делать, если порядок после переносов не совпал.
+const MAX_CORRECTIONS: u32 = 1;
 /// Насколько заходить за край соседа, чтобы встать перед ним или после него.
 const DROP_OFFSET: f64 = 2.0;
 /// Вес неподвижной иконки в цепочке: она должна попасть в цепочку при любом раскладе.
@@ -79,7 +83,6 @@ pub fn arrange(order: Vec<u32>) {
         let (moved, skipped) = arrange_all(&order);
         post(CGEventType::MouseMoved, home, CGEventFlags::empty());
         CGWarpMouseCursorPosition(home);
-        wait_until_still();
         let result: Vec<u32> = current_order(&order).iter().map(|window| window.id).collect();
         crate::log::append(&format!(
             "mover: перенесено {moved}, пропущено {skipped:?} за {} мс, порядок {}",
@@ -99,17 +102,27 @@ pub fn arrange(order: Vec<u32>) {
 /// Переносит элементы вне цепочки. Окно, которое не сдвинулось, становится
 /// подозреваемым: план пересчитывается так, чтобы оно стояло на месте. Неподвижным
 /// подозреваемый признаётся, только если в этом же применении сдвинулось другое окно.
+/// Если после прохода порядок всё же не совпал, делается добивочный проход.
 fn arrange_all(order: &[u32]) -> (usize, Vec<u32>) {
     let known = immovable();
     let mut suspects: HashSet<u32> = HashSet::new();
     let mut moved = 0;
     let mut skipped = Vec::new();
-    for _pass in 0..=order.len() {
+    let mut corrections = 0;
+    loop {
+        wait_until_still();
         let pinned: HashSet<u32> = known.union(&suspects).copied().collect();
         let current: Vec<u32> = current_order(order).iter().map(|window| window.id).collect();
         let stable = stable_chain(order, &current, &pinned);
+        if stable.len() == current.len() {
+            break;
+        }
+        if corrections > 0 {
+            crate::log::append(&format!("mover: порядок не совпал ({current:?}) — добиваю"));
+        }
         let mut placed: Vec<u32> = stable.clone();
         let mut replan = false;
+        let mut moved_now = 0;
         skipped.clear();
         for (place, &id) in order.iter().enumerate() {
             if stable.contains(&id) {
@@ -121,8 +134,8 @@ fn arrange_all(order: &[u32]) -> (usize, Vec<u32>) {
             }
             let before = order[place + 1..].iter().find(|next| stable.contains(next)).copied();
             let after = order[..place].iter().rev().find(|previous| placed.contains(previous)).copied();
-            match move_next_to(id, before, after) {
-                Outcome::Moved => moved += 1,
+            match move_next_to(id, before, after, moved_now > 0) {
+                Outcome::Moved => moved_now += 1,
                 Outcome::Skipped => skipped.push(id),
                 Outcome::Stuck => {
                     suspects.insert(id);
@@ -132,9 +145,18 @@ fn arrange_all(order: &[u32]) -> (usize, Vec<u32>) {
             }
             placed.push(id);
         }
-        if !replan {
+        moved += moved_now;
+        if replan {
+            continue;
+        }
+        if moved_now == 0 {
             break;
         }
+        if corrections == MAX_CORRECTIONS {
+            wait_until_still();
+            break;
+        }
+        corrections += 1;
     }
     confirm_immovable(&suspects, moved);
     (moved, skipped)
@@ -188,29 +210,38 @@ fn stable_chain(order: &[u32], current: &[u32], pinned: &HashSet<u32>) -> Vec<u3
     chain
 }
 
-/// Ставит `id` перед `before` или, если его нет, после `after`.
-fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>) -> Outcome {
+/// Ставит `id` перед `before` или, если его нет, после `after`. После предыдущего
+/// переноса (`after_move`) сначала ждём, пока строка меню успокоится; бросаем на
+/// ближний край соседа со стороны, откуда едет иконка.
+fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>, after_move: bool) -> Outcome {
+    let started = Instant::now();
+    let waited = if after_move { wait_until_still() } else { 0 };
     let layout = crate::capture::icon_layout();
-    let find = |wanted: u32| layout.iter().find(|window| window.id == wanted);
-    let Some(item) = find(id) else { return Outcome::Skipped };
+    let Some(item) = layout.iter().find(|window| window.id == id) else { return Outcome::Skipped };
     if !item.onscreen {
         crate::log::append(&format!("mover: окно {id} не нарисовано (под чёлкой) — пропускаю"));
         return Outcome::Skipped;
     }
-    let (target_x, touching) = match (before.and_then(find), after.and_then(find)) {
-        (Some(next), _) => (next.x + DROP_OFFSET, item.x + item.width - next.x),
-        (None, Some(previous)) => {
-            (previous.x + previous.width - DROP_OFFSET, previous.x + previous.width - item.x)
-        }
+    let others: Vec<&IconWindow> = layout.iter().filter(|window| window.id != id).collect();
+    let position = |wanted: u32| others.iter().position(|window| window.id == wanted);
+    let (left, right) = match (before.and_then(position), after.and_then(position)) {
+        (Some(next), _) => (next.checked_sub(1).map(|i| others[i]), Some(others[next])),
+        (None, Some(previous)) => (Some(others[previous]), others.get(previous + 1).copied()),
         (None, None) => return Outcome::Skipped,
     };
-    if touching.abs() < 1.0 || (item.x..=item.x + item.width).contains(&target_x) {
+    let after_left = left.is_none_or(|window| window.x < item.x);
+    let before_right = right.is_none_or(|window| item.x < window.x);
+    if after_left && before_right {
         crate::log::append(&format!("mover: окно {id} уже на месте"));
         return Outcome::Skipped;
     }
+    let target_x = match (left, right) {
+        (_, Some(next)) if item.x > next.x => next.x + DROP_OFFSET,
+        (Some(previous), _) => previous.x + previous.width - DROP_OFFSET,
+        _ => return Outcome::Skipped,
+    };
     let from = CGPoint::new(item.x + item.width / 2.0, item.height / 2.0);
     let to = CGPoint::new(target_x, from.y);
-    let started = Instant::now();
     let preferred = PREFERRED.load(Ordering::Relaxed);
     let attempts = std::iter::once(preferred).chain((0..METHODS.len()).filter(|&m| m != preferred));
     for method in attempts {
@@ -219,7 +250,7 @@ fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>) -> Outcome {
         if settled(id, item.x) {
             PREFERRED.store(method, Ordering::Relaxed);
             crate::log::append(&format!(
-                "mover: окно {id} перенесено ({name}) за {} мс",
+                "mover: окно {id} перенесено ({name}) за {} мс, из них ожидание {waited} мс",
                 started.elapsed().as_millis()
             ));
             return Outcome::Moved;
@@ -250,22 +281,31 @@ fn settled(id: u32, start_x: f64) -> bool {
     false
 }
 
-/// Ждёт, пока строка меню доиграет анимацию: два замера подряд совпали.
-fn wait_until_still() {
+/// Ждёт, пока строка меню доиграет анимацию: `STILL_READS` замеров подряд совпали
+/// с предыдущим. Возвращает, сколько миллисекунд ждали.
+fn wait_until_still() -> u128 {
+    let started = Instant::now();
     let positions = || -> Vec<(u32, f64)> {
         crate::capture::icon_layout().iter().map(|window| (window.id, window.x)).collect()
     };
-    let deadline = Instant::now() + STILL_TIMEOUT;
+    let deadline = started + STILL_TIMEOUT;
     let mut last = positions();
+    let mut unchanged = 0;
     while Instant::now() < deadline {
         thread::sleep(STILL_POLL);
         let now = positions();
         if now == last {
-            return;
+            unchanged += 1;
+            if unchanged == STILL_READS {
+                return started.elapsed().as_millis();
+            }
+        } else {
+            unchanged = 0;
+            last = now;
         }
-        last = now;
     }
     crate::log::append("mover: строка меню не успокоилась — считаю по последнему замеру");
+    started.elapsed().as_millis()
 }
 
 /// Cmd+drag: нажать, (провести через середину,) довести до цели и отпустить.
