@@ -81,6 +81,8 @@ pub struct ControllerIvars {
     /// Стартовое авто-скрытие уже запущено? (защита от двойного вызова из
     /// события NSWindowDidMove и fallback-таймера, итер.8).
     placement_done: Cell<bool>,
+    /// Сколько стартовых шагов (снимок иконок, поиск их кнопок) ещё идёт — авто-скрытие ждёт их.
+    startup_steps_pending: Cell<u8>,
     panel: RefCell<Option<Panel>>,
     /// Таймер обновления клонов: живёт только пока панель открыта.
     panel_refresh_timer: RefCell<Option<Retained<NSTimer>>>,
@@ -270,10 +272,23 @@ define_class!(
         #[unsafe(method(setPanelIcons:ids:))]
         fn set_panel_icons(&self, images: &NSArray<NSImage>, ids: &NSArray<NSNumber>) {
             let target: &AnyObject = self.as_ref();
-            if let Some(panel) = self.ivars().panel.borrow().as_ref() {
-                panel.set_icons(self.mtm(), target, images, ids);
+            self.ivars()
+                .panel
+                .borrow_mut()
+                .get_or_insert_with(|| Panel::new(self.mtm()))
+                .set_icons(self.mtm(), target, images, ids);
+            if self.ivars().startup_steps_pending.get() > 0 {
+                self.finish_startup_step();
+            } else {
+                let ids = ids.iter().map(|id| id.unsignedIntValue()).collect();
+                crate::click::remember_owners(ids, false);
             }
-            crate::click::remember_owners(ids.iter().map(|id| id.unsignedIntValue()).collect());
+        }
+
+        /// Кнопки иконок под чёлкой найдены в Accessibility на старте.
+        #[unsafe(method(onOwnersRemembered))]
+        fn on_owners_remembered(&self) {
+            self.finish_startup_step();
         }
 
         /// Клик по клону в панели — нажимаем настоящую иконку под чёлкой.
@@ -308,6 +323,7 @@ impl Controller {
             spacer_retries: Cell::new(ANCHOR_MAX_RETRIES),
             placement_attempts: Cell::new(0),
             placement_done: Cell::new(false),
+            startup_steps_pending: Cell::new(0),
             panel: RefCell::new(None),
             panel_refresh_timer: RefCell::new(None),
         });
@@ -374,6 +390,7 @@ impl Controller {
         panel
             .get_or_insert_with(|| Panel::new(self.mtm()))
             .show_below(&anchor_window);
+        crate::log::append("panel: открыта");
         let target: &AnyObject = self.as_ref();
         unsafe {
             NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
@@ -442,9 +459,21 @@ impl Controller {
             );
         }
         crate::log::append(&format!(
-            "placement готово [{source}]: spacer.x={sx:?} anchor.x={ax:?} — стартовое авто-скрытие"
+            "placement готово [{source}]: spacer.x={sx:?} anchor.x={ax:?} — стартовый снимок, затем авто-скрытие"
         ));
         if !self.ivars().hidden.get() {
+            self.ivars().startup_steps_pending.set(2);
+            let ids = crate::capture::capture_under_notch();
+            crate::click::remember_owners(ids, true);
+        }
+    }
+
+    /// Закрывает один стартовый шаг; после последнего — стартовое авто-скрытие.
+    fn finish_startup_step(&self) {
+        let left = self.ivars().startup_steps_pending.get().saturating_sub(1);
+        self.ivars().startup_steps_pending.set(left);
+        if left == 0 && !self.ivars().hidden.get() {
+            crate::log::append("стартовый снимок и кнопки готовы — авто-скрытие");
             self.toggle();
         }
     }

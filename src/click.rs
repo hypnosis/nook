@@ -9,7 +9,10 @@ use std::ptr::NonNull;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use objc2_app_kit::NSWorkspace;
+use dispatch2::DispatchQueue;
+use objc2::runtime::AnyObject;
+use objc2::{msg_send, MainThreadMarker};
+use objc2_app_kit::{NSApplication, NSWorkspace};
 use objc2_application_services::{
     AXIsProcessTrusted, AXIsProcessTrustedWithOptions, AXUIElement, AXValue, AXValueType,
 };
@@ -37,7 +40,8 @@ unsafe impl Send for AxItem {}
 static CACHE: Mutex<Option<HashMap<u32, AxItem>>> = Mutex::new(None);
 
 /// В фоне находит элементы для окон панели, которых ещё нет в кэше.
-pub fn remember_owners(ids: Vec<u32>) {
+/// С `notify` по окончании зовёт `onOwnersRemembered` у делегата приложения.
+pub fn remember_owners(ids: Vec<u32>, notify: bool) {
     let missing: Vec<u32> = {
         let cache = CACHE.lock().unwrap();
         ids.into_iter()
@@ -45,6 +49,9 @@ pub fn remember_owners(ids: Vec<u32>) {
             .collect()
     };
     if missing.is_empty() {
+        if notify {
+            notify_remembered();
+        }
         return;
     }
     let pids = running_pids();
@@ -61,6 +68,19 @@ pub fn remember_owners(ids: Vec<u32>) {
             started.elapsed().as_millis(),
             cache.len()
         ));
+        if notify {
+            notify_remembered();
+        }
+    });
+}
+
+fn notify_remembered() {
+    DispatchQueue::main().exec_async(|| {
+        let mtm = MainThreadMarker::new().expect("main queue");
+        if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
+            let delegate: &AnyObject = delegate.as_ref();
+            let _: () = unsafe { msg_send![delegate, onOwnersRemembered] };
+        }
     });
 }
 
@@ -96,7 +116,7 @@ pub fn click_window(id: u32) {
 
 /// Один проход по всем приложениям: каждому окну — элемент с ближайшим центром x.
 fn match_windows(ids: &[u32], pids: &[i32]) -> Vec<(u32, AxItem)> {
-    let centers: Vec<(u32, f64)> = ids.iter().filter_map(|&id| Some((id, window_center(id)?))).collect();
+    let centers = crate::capture::window_centers(ids);
     let mut items = all_items(pids);
     let mut matched = Vec::new();
     for (id, center) in centers {
@@ -113,30 +133,33 @@ fn match_windows(ids: &[u32], pids: &[i32]) -> Vec<(u32, AxItem)> {
     matched
 }
 
-/// Все иконки строки меню всех приложений с центрами x.
+/// Все иконки строки меню всех приложений с центрами x. Приложения опрашиваются
+/// одновременно: общее время — как у самого медленного, а не сумма.
 fn all_items(pids: &[i32]) -> Vec<(f64, AxItem)> {
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = pids.iter().map(|&pid| scope.spawn(move || app_items(pid))).collect();
+        workers.into_iter().flat_map(|worker| worker.join().unwrap_or_default()).collect()
+    })
+}
+
+/// Иконки строки меню одного приложения с центрами x.
+fn app_items(pid: i32) -> Vec<(f64, AxItem)> {
+    let app = unsafe { AXUIElement::new_application(pid) };
+    unsafe { app.set_messaging_timeout(AX_TIMEOUT) };
+    let Some(bar) = attribute(&app, "AXExtrasMenuBar") else { return Vec::new() };
+    let Some(bar) = bar.downcast::<AXUIElement>().ok() else { return Vec::new() };
+    let Some(children) = attribute(&bar, "AXChildren") else { return Vec::new() };
+    let Some(children) = children.downcast::<CFArray>().ok() else { return Vec::new() };
     let mut items = Vec::new();
-    for &pid in pids {
-        let app = unsafe { AXUIElement::new_application(pid) };
-        unsafe { app.set_messaging_timeout(AX_TIMEOUT) };
-        let Some(bar) = attribute(&app, "AXExtrasMenuBar") else { continue };
-        let Some(bar) = bar.downcast::<AXUIElement>().ok() else { continue };
-        let Some(children) = attribute(&bar, "AXChildren") else { continue };
-        let Some(children) = children.downcast::<CFArray>().ok() else { continue };
-        for index in 0..children.count() {
-            let item = unsafe { children.value_at_index(index) } as *mut AXUIElement;
-            let Some(item) = NonNull::new(item) else { continue };
-            let element = unsafe { CFRetained::retain(item) };
-            if let Some(center) = center_x(&element) {
-                items.push((center, AxItem { pid, element }));
-            }
+    for index in 0..children.count() {
+        let item = unsafe { children.value_at_index(index) } as *mut AXUIElement;
+        let Some(item) = NonNull::new(item) else { continue };
+        let element = unsafe { CFRetained::retain(item) };
+        if let Some(center) = center_x(&element) {
+            items.push((center, AxItem { pid, element }));
         }
     }
     items
-}
-
-fn window_center(id: u32) -> Option<f64> {
-    crate::capture::window_bounds(id).map(|(x, _, width, _)| x + width / 2.0)
 }
 
 fn running_pids() -> Vec<i32> {

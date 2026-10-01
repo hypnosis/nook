@@ -39,8 +39,10 @@ struct Shot {
 
 /// Снимает иконки под чёлкой и по готовности отдаёт их делегату приложения
 /// через `setPanelIcons:ids:` (картинки и номера их окон, слева направо).
-pub fn capture_under_notch() {
+/// Сразу возвращает номера окон, которые снимаются.
+pub fn capture_under_notch() -> Vec<u32> {
     let windows = under_notch_windows();
+    let ids: Vec<u32> = windows.iter().map(|w| w.id).collect();
     crate::log::append(&format!(
         "capture: под чёлкой окон {}: {:?}",
         windows.len(),
@@ -48,7 +50,7 @@ pub fn capture_under_notch() {
     ));
     if windows.is_empty() {
         deliver(Vec::new());
-        return;
+        return ids;
     }
 
     let handler = RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
@@ -57,6 +59,7 @@ pub fn capture_under_notch() {
             deliver(Vec::new());
             return;
         };
+        crate::log::append("capture: список ScreenCaptureKit получен");
         capture_windows(&content, &windows);
     });
     unsafe {
@@ -64,6 +67,7 @@ pub fn capture_under_notch() {
             true, false, &handler,
         );
     }
+    ids
 }
 
 /// Каждое окно — отдельным фильтром: несколько окон в одном фильтре дают −3811.
@@ -185,14 +189,22 @@ fn under_notch_windows() -> Vec<IconWindow> {
     windows.into_iter().map(|(_, w)| w).collect()
 }
 
-/// Текущая рамка окна в глобальных координатах CG (начало — левый верхний угол).
-pub fn window_bounds(id: u32) -> Option<(f64, f64, f64, f64)> {
+/// Центры x окон `ids` в глобальных координатах CG — за один запрос списка окон.
+pub fn window_centers(ids: &[u32]) -> Vec<(u32, f64)> {
     // Запрос одного окна (OptionIncludingWindow) для иконок под чёлкой возвращает пусто.
-    let list = window_list(CGWindowListOption::OptionAll, kCGNullWindowID)?;
-    let info = list
-        .iter()
-        .find(|info| number(info, "kCGWindowNumber").is_some_and(|n| n.unsignedIntValue() == id))?;
-    bounds(&info)
+    let Some(list) = window_list(CGWindowListOption::OptionAll, kCGNullWindowID) else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|info| {
+            let id = number(&info, "kCGWindowNumber")?.unsignedIntValue();
+            if !ids.contains(&id) {
+                return None;
+            }
+            let (x, _, width, _) = bounds(&info)?;
+            Some((id, x + width / 2.0))
+        })
+        .collect()
 }
 
 /// CFArray из CGWindowListCopyWindowInfo бесшовно приводится к NSArray<NSDictionary>.
