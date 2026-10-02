@@ -38,6 +38,10 @@ const SIDEBAR_ROW_HEIGHT: f64 = 28.0;
 const CONTENT_INSET: f64 = 24.0;
 const CONTENT_TOP: f64 = 48.0;
 const SPACING: f64 = 12.0;
+/// Зазор между значком и подписью в строке боковой панели.
+const SIDEBAR_ICON_GAP: f64 = 6.0;
+/// Отступ строки боковой панели от левого края.
+const SIDEBAR_ROW_INSET: f64 = 4.0;
 
 /// Показывать ли панель под строкой меню (по умолчанию да).
 pub fn show_panel() -> bool {
@@ -316,12 +320,12 @@ impl Sidebar {
             &NSArray::from_slice(&[&*icon as &NSView, &*text]),
             mtm,
         );
-        stack.setSpacing(6.0);
+        stack.setSpacing(SIDEBAR_ICON_GAP);
         cell.addSubview(&stack);
         stack.setTranslatesAutoresizingMaskIntoConstraints(false);
         stack
             .leadingAnchor()
-            .constraintEqualToAnchor_constant(&cell.leadingAnchor(), 4.0)
+            .constraintEqualToAnchor_constant(&cell.leadingAnchor(), SIDEBAR_ROW_INSET)
             .setActive(true);
         stack
             .centerYAnchor()

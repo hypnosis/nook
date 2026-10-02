@@ -23,6 +23,8 @@ const CONTROL_CENTER_BUNDLE: &str = "com.apple.controlcenter";
 // HARDCODE: предел высоты окна иконки строки меню и ожидание снимка; вынести в конфиг позже.
 const MAX_ICON_HEIGHT: f64 = 50.0;
 const SHOT_TIMEOUT: Duration = Duration::from_secs(2);
+/// Допуск сравнения координат окон строки меню, pt.
+pub const POSITION_TOLERANCE: f64 = 1.0;
 
 /// Окно иконки строки меню: номер CG-окна, левый край и размер в pt, нарисовано ли.
 pub struct IconWindow {
@@ -54,11 +56,6 @@ struct Shot {
 /// (разделитель панели), его не снимаем.
 pub fn capture_under_notch(own_id: Option<u32>) -> Vec<u32> {
     let windows = icon_windows(|w| w.x >= 0.0 && !w.onscreen && Some(w.id) != own_id);
-    crate::log::append(&format!(
-        "capture: под чёлкой окон {}: {:?}",
-        windows.len(),
-        windows.iter().map(|w| w.id).collect::<Vec<_>>()
-    ));
     capture(windows, Receiver::Panel)
 }
 
@@ -70,8 +67,7 @@ pub fn capture_ids(ids: &[u32]) {
 /// Снимает все иконки левее `limit_x` (левый край ≡◂) для редактора и отдаёт их
 /// делегату через `setEditorIcons:ids:`. `own_id` — как в `capture_under_notch`.
 pub fn capture_left_of(limit_x: f64, own_id: Option<u32>) {
-    let windows = icon_windows(|w| w.x >= 0.0 && w.x < limit_x - 1.0 && Some(w.id) != own_id);
-    crate::log::append(&format!("capture: для редактора окон {}", windows.len()));
+    let windows = icon_windows(|w| w.x >= 0.0 && w.x < limit_x - POSITION_TOLERANCE && Some(w.id) != own_id);
     capture(windows, Receiver::Editor);
 }
 
@@ -93,7 +89,6 @@ fn capture(windows: Vec<IconWindow>, receiver: Receiver) -> Vec<u32> {
             deliver(Vec::new(), receiver);
             return;
         };
-        crate::log::append("capture: список ScreenCaptureKit получен");
         capture_windows(&content, &windows, receiver);
     });
     unsafe {
@@ -182,7 +177,6 @@ fn deliver(shots: Vec<Shot>, receiver: Receiver) {
             .collect();
         let ids: Vec<Retained<NSNumber>> =
             shots.iter().map(|shot| NSNumber::new_u32(shot.id)).collect();
-        crate::log::append(&format!("capture: снято {}", images.len()));
         let images = NSArray::from_retained_slice(&images);
         let ids = NSArray::from_retained_slice(&ids);
         if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {

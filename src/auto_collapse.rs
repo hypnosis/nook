@@ -51,9 +51,9 @@ pub fn mouse_in_menu_bar_strip(mtm: MainThreadMarker) -> bool {
     mouse.y >= top - MENU_BAR_STRIP && mouse.y <= top
 }
 
-/// Токен глобального монитора. Хранить обязательно — иначе монитор снимается.
+/// Ручка глобального монитора мыши. Хранить обязательно — иначе монитор снимается.
 pub struct MouseMonitor {
-    token: Option<Retained<AnyObject>>,
+    monitor_handle: Option<Retained<AnyObject>>,
 }
 
 impl MouseMonitor {
@@ -65,19 +65,17 @@ impl MouseMonitor {
                 let _: () = msg_send![&*target, onMouseMoved];
             }
         });
-        let token = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
+        let monitor_handle = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
             NSEventMask::MouseMoved,
             &handler,
         );
-        crate::log::append("auto-collapse: монитор мыши включён");
-        Self { token }
+        Self { monitor_handle }
     }
 
     /// Снимает монитор.
     pub fn stop(&mut self) {
-        if let Some(token) = self.token.take() {
-            unsafe { NSEvent::removeMonitor(&token) };
-            crate::log::append("auto-collapse: монитор мыши выключен");
+        if let Some(handle) = self.monitor_handle.take() {
+            unsafe { NSEvent::removeMonitor(&handle) };
         }
     }
 }

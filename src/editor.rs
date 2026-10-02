@@ -19,6 +19,10 @@ use crate::strings::{self, Lang};
 // HARDCODE: размеры редактора; вынести в конфиг позже.
 pub const EDITOR_WIDTH: f64 = 520.0;
 const TITLE_HEIGHT: f64 = 22.0;
+/// Зазор под заголовком ряда.
+const TITLE_GAP: f64 = 4.0;
+/// Размер плитки, если у снимка иконки нет картинки.
+const FALLBACK_ICON_SIZE: NSSize = NSSize::new(24.0, 24.0);
 const ROW_HEIGHT: f64 = 52.0;
 const ROW_GAP: f64 = 14.0;
 const PADDING: f64 = 10.0;
@@ -114,7 +118,6 @@ define_class!(
                 rows[target].insert(position, tile);
             }
             self.layout_tiles();
-            self.log_order();
         }
     }
 );
@@ -142,7 +145,7 @@ impl EditorView {
             ));
             label.setFrame(NSRect::new(
                 NSPoint::new(0.0, top - TITLE_HEIGHT),
-                NSSize::new(EDITOR_WIDTH, TITLE_HEIGHT - 4.0),
+                NSSize::new(EDITOR_WIDTH, TITLE_HEIGHT - TITLE_GAP),
             ));
             this.addSubview(&label);
             let backing = NSBox::new(mtm);
@@ -181,7 +184,6 @@ impl EditorView {
         *rows = [main, panel];
         drop(rows);
         self.layout_tiles();
-        self.log_order();
     }
 
     /// Номера окон слева направо: (панель, основной ряд).
@@ -208,7 +210,7 @@ impl EditorView {
                     .image
                     .image()
                     .map(|image| image.size())
-                    .unwrap_or(NSSize::new(24.0, 24.0));
+                    .unwrap_or(FALLBACK_ICON_SIZE);
                 let y = top + ((ROW_HEIGHT - size.height) / 2.0).max(0.0);
                 tile.image.setFrame(NSRect::new(NSPoint::new(x, y), size));
                 x += size.width + ICON_SPACING;
@@ -232,16 +234,6 @@ impl EditorView {
 
     fn location(&self, event: &NSEvent) -> NSPoint {
         self.convertPoint_fromView(event.locationInWindow(), None)
-    }
-
-    fn log_order(&self) {
-        let rows = self.ivars().rows.borrow();
-        let ids = |row: usize| rows[row].iter().map(|tile| tile.id).collect::<Vec<_>>();
-        crate::log::append(&format!(
-            "редактор: основной {:?} панель {:?}",
-            ids(MAIN),
-            ids(PANEL)
-        ));
     }
 }
 

@@ -18,7 +18,6 @@ mod login;
 mod menu;
 mod mover;
 mod panel;
-mod probe;
 mod reveal;
 mod settings;
 mod shroud;
@@ -35,7 +34,6 @@ use crate::controller::Controller;
 
 fn main() {
     log::reset();
-    log::append("=== ШАГ 1 запуск ===");
 
     let mtm = MainThreadMarker::new().expect("main должен идти на главном потоке");
     let app = NSApplication::sharedApplication(mtm);
@@ -48,6 +46,5 @@ fn main() {
     let delegate = ProtocolObject::<dyn NSApplicationDelegate>::from_ref(&*controller);
     app.setDelegate(Some(delegate));
 
-    log::append("делегат установлен, запускаю RunLoop");
     app.run();
 }

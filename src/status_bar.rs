@@ -83,9 +83,6 @@ unsafe fn make_spacer(bar: &NSStatusBar, mtm: MainThreadMarker, lang: Lang) -> R
         button.setToolTip(Some(&NSString::from_str(strings::cutter_tooltip(lang))));
         set_button_symbol(&button, SPACER_SYMBOL);
     }
-    crate::log::append(&format!(
-        "created spacer: autosave='{SPACER_AUTOSAVE}' length={SPACER_WIDTH_SHOWN} symbol='{SPACER_SYMBOL}'"
-    ));
     spacer
 }
 
@@ -106,9 +103,6 @@ unsafe fn make_anchor(
         // Ловим И левый, И правый клик — разделяем их в обработчике (левый =
         // toggle, правый = меню). sendActionOn возвращает старую маску — игнор.
         let _ = button.sendActionOn(NSEventMask::LeftMouseUp | NSEventMask::RightMouseUp);
-        crate::log::append(&format!(
-            "created anchor: autosave='{ANCHOR_AUTOSAVE}' symbol='{ANCHOR_SYMBOL_SHOWN}' variableLength"
-        ));
     } else {
         crate::log::append("WARNING: anchor button() returned nil — клик работать не будет");
     }

@@ -1,8 +1,6 @@
-//! Диагностический лог в файл. Один append-only поток, без состояния.
-//!
-//! ШАГ 1 рассчитан на ручной тест заказчиком: приложение — agent-app без окна,
-//! stdout не виден. Поэтому всё поведение пишем в файл, который заказчик смотрит
-//! через `tail -f /tmp/nook-debug.log`.
+//! Диагностический лог в файл, только в отладочной сборке: релиз молчит.
+//! Приложение — агент без окна, stdout не виден, поэтому лог смотрят через
+//! `tail -f /tmp/nook-debug.log`.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -15,6 +13,9 @@ const LOG_PATH: &str = "/tmp/nook-debug.log";
 /// Намеренно не паникует при ошибке записи: лог — диагностика, его отказ
 /// не должен ронять само приложение. Если файл недоступен — молча пропускаем.
 pub fn append(message: &str) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     let (seconds, millis) = (now.as_secs(), now.subsec_millis());
 
@@ -26,6 +27,9 @@ pub fn append(message: &str) {
 /// Перезаписывает лог-файл с нуля. Вызывается один раз на старте,
 /// чтобы каждый запуск читался отдельно, без хвоста прошлых сессий.
 pub fn reset() {
+    if !cfg!(debug_assertions) {
+        return;
+    }
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .write(true)

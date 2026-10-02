@@ -131,8 +131,6 @@ define_class!(
     unsafe impl NSApplicationDelegate for Controller {
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn did_finish_launching(&self, _notification: &NSNotification) {
-            crate::log::append("applicationDidFinishLaunching: создаю айтемы");
-            crate::probe::watch_clicks();
 
             let mtm = self.mtm();
             let target: &AnyObject = self.as_ref();
@@ -140,7 +138,6 @@ define_class!(
 
             *self.ivars().items.borrow_mut() = Some(items);
             self.ivars().hidden.set(false);
-            crate::log::append("айтемы созданы, состояние: показано (hidden=false)");
 
             // ОСНОВНОЙ триггер (journal 007): подписка на NSWindowDidMoveNotification.
             // Система постит её, когда айтем получает реальную координату (x:0→1700).
@@ -231,7 +228,6 @@ define_class!(
         fn on_toggle_show_panel(&self, sender: &NSSwitch) {
             let on = sender.state() == NSControlStateValueOn;
             crate::settings::set_show_panel(on);
-            crate::log::append(&format!("настройки: показывать панель = {on}"));
             if let Some(items) = self.ivars().items.borrow().as_ref() {
                 self.sync_panel(items, self.ivars().hidden.get());
             }
@@ -305,7 +301,6 @@ define_class!(
                 .borrow_mut()
                 .get_or_insert_with(|| crate::divider::create(mtm))
                 .setLength(crate::divider::NARROW_WIDTH);
-            crate::log::append("применить: строка раскрыта, разделитель узкий");
             let target: &AnyObject = self.as_ref();
             unsafe {
                 NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
@@ -353,7 +348,6 @@ define_class!(
             };
             let order: Vec<u32> =
                 panel_ids.iter().copied().chain([divider_id]).chain(main_ids.iter().copied()).collect();
-            crate::log::append(&format!("применить: порядок {order:?} (разделитель {divider_id})"));
             self.ivars().mouse_taken.set(true);
             crate::mover::take_mouse();
             crate::mover::arrange(order);
@@ -447,7 +441,6 @@ define_class!(
         /// Пункт меню «Выход» — завершаем приложение.
         #[unsafe(method(onQuit:))]
         fn on_quit(&self, _sender: *mut AnyObject) {
-            crate::log::append("меню: Выход");
             NSApplication::sharedApplication(self.mtm()).terminate(None);
         }
 
@@ -456,7 +449,7 @@ define_class!(
         /// в отличие от поллинга по таймеру.
         #[unsafe(method(onWindowMoved:))]
         fn on_window_moved(&self, _notification: &NSNotification) {
-            self.finish_placement_if_ready("event");
+            self.finish_placement_if_ready();
         }
 
         /// Проверка размещения айтемов (периодическая, после старта).
@@ -474,7 +467,6 @@ define_class!(
                     status_bar::item_origin_x(&items.anchor, mtm),
                 )
             };
-            crate::log::append(&format!("placement: spacer.x={sx:?} anchor.x={ax:?}"));
 
             let lang = self.ivars().lang;
             let target: &AnyObject = self.as_ref();
@@ -483,7 +475,7 @@ define_class!(
             // Оба размещены → общий финиш (событие могло уже его сделать) + стоп таймера.
             if both_ok {
                 self.stop_placement_timer(timer);
-                self.finish_placement_if_ready("timer");
+                self.finish_placement_if_ready();
                 return;
             }
 
@@ -581,7 +573,6 @@ define_class!(
         #[unsafe(method(onThemeChanged:))]
         fn on_theme_changed(&self, _notification: &NSNotification) {
             let theme = crate::theme::current();
-            crate::log::append(&format!("тема: {theme:?}"));
             let target: &AnyObject = self.as_ref();
             let mut panel = self.ivars().panel.borrow_mut();
             let Some(panel) = panel.as_mut() else { return };
@@ -611,16 +602,6 @@ define_class!(
             if let Some(divider) = self.ivars().divider.borrow().as_ref() {
                 divider.setLength(length);
             }
-            crate::log::append(&format!("divider: длина {length}"));
-        }
-
-        /// Проба шторки закончена — обычное стартовое авто-скрытие.
-        #[unsafe(method(probeFinished))]
-        fn probe_finished(&self) {
-            crate::log::append("probe: готово — авто-скрытие");
-            if !self.ivars().hidden.get() {
-                self.toggle();
-            }
         }
 
         /// Клик по клону в панели — открываем меню настоящей иконки у чёлки.
@@ -628,12 +609,6 @@ define_class!(
         #[unsafe(method(onCloneClick:))]
         fn on_clone_click(&self, sender: &NSButton) {
             let icon_id = sender.tag() as u32;
-            if let Some(event) = NSApplication::sharedApplication(self.mtm()).currentEvent() {
-                crate::log::append(&format!(
-                    "клон: клик по {icon_id}, отпускание {} мс назад",
-                    crate::probe::event_lag_ms(&event)
-                ));
-            }
             if crate::reveal::press(icon_id) {
                 return;
             }
@@ -648,7 +623,6 @@ define_class!(
         #[unsafe(method(onSpaceChanged:))]
         fn on_space_changed(&self, _notification: &NSNotification) {
             if !self.ivars().hidden.get() && crate::reveal::is_on() {
-                crate::log::append("рабочий стол сменился — сворачиваю");
                 self.toggle();
             }
         }
@@ -661,7 +635,6 @@ define_class!(
             if self.ivars().hidden.get() || self.ivars().applying.get() || crate::reveal::menu_open() {
                 return;
             }
-            crate::log::append("авто-collapse: мышь ушла, сворачиваю");
             self.toggle();
         }
     }
@@ -722,11 +695,6 @@ impl Controller {
         items.spacer.setLength(spacer_width);
         status_bar::set_anchor_symbol(items, self.mtm(), anchor_symbol);
 
-        crate::log::append(&format!(
-            "клик: hidden={going_to_hide} spacer.length={spacer_width} anchor='{anchor_symbol}'"
-        ));
-        self.log_widths(items);
-
         // Смена состояния гасит взведённый таймер коллапса.
         self.cancel_collapse_timer();
         // Показали → следим за мышью (для автосворачивания). Скрыли → перестаём.
@@ -757,7 +725,6 @@ impl Controller {
         panel
             .get_or_insert_with(|| Panel::new(self.mtm()))
             .show_below(&anchor_window);
-        crate::log::append("panel: открыта");
         self.capture_panel_when_settled();
         let target: &AnyObject = self.as_ref();
         let refresh = unsafe {
@@ -789,7 +756,7 @@ impl Controller {
     /// Вызывается и из события NSWindowDidMove (основной триггер), и из
     /// fallback-таймера. Идемпотентно: срабатывает один раз (флаг placement_done),
     /// отписывается от нотификации и запускает стартовое авто-скрытие.
-    fn finish_placement_if_ready(&self, source: &str) {
+    fn finish_placement_if_ready(&self) {
         if self.ivars().placement_done.get() {
             return;
         }
@@ -817,9 +784,6 @@ impl Controller {
                 None,
             );
         }
-        crate::log::append(&format!(
-            "placement готово [{source}]: spacer.x={sx:?} anchor.x={ax:?} — стартовый снимок, затем авто-скрытие"
-        ));
         if self.ivars().hidden.get() {
             return;
         }
@@ -877,9 +841,8 @@ impl Controller {
         };
         let id = layout
             .iter()
-            .find(|window| (window.x - divider_x).abs() < 1.0 && window.width > 0.0 && !known.contains(&window.id))
+            .find(|window| (window.x - divider_x).abs() < crate::capture::POSITION_TOLERANCE && window.width > 0.0 && !known.contains(&window.id))
             .map(|window| window.id)?;
-        crate::log::append(&format!("divider: окно {id}"));
         self.ivars().divider_window.set(Some(id));
         Some(id)
     }
@@ -907,22 +870,8 @@ impl Controller {
         let left = self.ivars().startup_steps_pending.get().saturating_sub(1);
         self.ivars().startup_steps_pending.set(left);
         if left == 0 && !self.ivars().hidden.get() {
-            if crate::probe::take_request() && self.start_shroud_probe() {
-                return;
-            }
-            crate::log::append("стартовый снимок и кнопки готовы — авто-скрытие");
             self.toggle();
         }
-    }
-
-    /// Временная проба шторки над промежутком у чёлки.
-    fn start_shroud_probe(&self) -> bool {
-        let Some(wide) = self.ivars().divider.borrow().as_ref().map(|divider| divider.length()) else {
-            return false;
-        };
-        let Some(gap) = self.notch_gap() else { return false };
-        crate::probe::run(gap, crate::divider::NARROW_WIDTH, wide);
-        true
     }
 
     /// Включает узкий режим панели, если панель открыта, в ней есть иконки и у чёлки есть место.
@@ -1013,7 +962,6 @@ impl Controller {
         let target: &AnyObject = self.as_ref();
         let timer = auto_collapse::make_collapse_timer(target);
         *self.ivars().collapse_timer.borrow_mut() = Some(timer);
-        crate::log::append("авто-collapse: мышь ушла из полосы, взвёл таймер");
     }
 
     /// Проверка порядка: оба айтема размещены (x>0) И спейсер строго левее якоря.
@@ -1030,14 +978,10 @@ impl Controller {
                 // Оба должны быть размещены (x>0) и спейсер строго левее якоря.
                 let placed = sx > 0.0 && ax > 0.0;
                 let ok = placed && sx < ax;
-                let why = if ok {
-                    "ЛЕВЕЕ ✓"
-                } else if !placed {
-                    "НЕ РАЗМЕЩЁН (x=0) ✗"
-                } else {
-                    "ПРАВЕЕ ✗ (поправь Cmd+drag)"
-                };
-                crate::log::append(&format!("guard: spacer.x={sx} anchor.x={ax} → spacer {why} anchor"));
+                if !ok {
+                    let why = if placed { "правее якоря" } else { "не размещён (x=0)" };
+                    crate::log::append(&format!("guard: spacer.x={sx} anchor.x={ax} — спейсер {why}"));
+                }
                 ok
             }
             _ => {
@@ -1068,7 +1012,6 @@ impl Controller {
         // scroll-arrow. См. perplexity/AppKit: at = (midX, 0) в координатах кнопки.
         let origin = NSPoint::new(0.0, 0.0);
         menu.popUpMenuPositioningItem_atLocation_inView(None, origin, Some(&button));
-        crate::log::append("показано контекстное меню (правый клик)");
     }
 
     /// Показывает знак блокировки на якоре и оставляет всё как есть.
@@ -1083,13 +1026,5 @@ impl Controller {
             .map(|screen| screen.frame().size.width)
             .unwrap_or(SCREEN_WIDTH_FALLBACK);
         (screen_width + HIDDEN_WIDTH_MARGIN).clamp(HIDDEN_WIDTH_MIN, HIDDEN_WIDTH_MAX)
-    }
-
-    fn log_widths(&self, items: &StatusItems) {
-        crate::log::append(&format!(
-            "  geometry: spacer.length={} anchor.length={}",
-            items.spacer.length(),
-            items.anchor.length()
-        ));
     }
 }

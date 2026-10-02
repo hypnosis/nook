@@ -21,6 +21,8 @@ const DARK_TONE: f64 = 0.35;
 const LIGHT_TONE: f64 = 0.65;
 /// Пиксели прозрачнее этого в тон иконки не входят.
 const MIN_ALPHA: u8 = 128;
+/// Веса красного, зелёного и синего в яркости (Rec. 601).
+const LUMA_WEIGHTS: [f64; 3] = [0.299, 0.587, 0.114];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Theme {
@@ -121,7 +123,7 @@ impl Pixels {
                 continue;
             }
             let channel = |value: u8| f64::from(value) / f64::from(alpha);
-            sum += 0.299 * channel(pixel[0]) + 0.587 * channel(pixel[1]) + 0.114 * channel(pixel[2]);
+            sum += LUMA_WEIGHTS.iter().zip(pixel).map(|(weight, &value)| weight * channel(value)).sum::<f64>();
             count += 1;
         }
         (count > 0).then(|| sum / count as f64)

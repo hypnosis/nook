@@ -41,12 +41,8 @@ const DROP_OFFSET: f64 = 2.0;
 /// Вес неподвижной иконки в цепочке: она должна попасть в цепочку при любом раскладе.
 const PINNED_WEIGHT: usize = 1000;
 
-/// Способы переноса по очереди: (пауза между событиями, вести ли через середину, название).
-const METHODS: [(Duration, bool, &str); 3] = [
-    (FAST_STEP, false, "напрямую к цели"),
-    (FAST_STEP, true, "через середину"),
-    (SAFE_STEP, true, "с паузами"),
-];
+/// Способы переноса по очереди: (пауза между событиями, вести ли через середину).
+const METHODS: [(Duration, bool); 3] = [(FAST_STEP, false), (FAST_STEP, true), (SAFE_STEP, true)];
 
 /// Способ, сработавший последним, — с него и начинаем.
 static PREFERRED: AtomicUsize = AtomicUsize::new(0);
@@ -78,17 +74,14 @@ pub fn release_mouse() {
 /// `onLayoutApplied` у делегата приложения.
 pub fn arrange(order: Vec<u32>) {
     thread::spawn(move || {
-        let started = Instant::now();
         let home = CGEvent::location(CGEvent::new(None).as_deref());
-        let (moved, skipped) = arrange_all(&order);
+        let (_, skipped) = arrange_all(&order);
         post(CGEventType::MouseMoved, home, CGEventFlags::empty());
         CGWarpMouseCursorPosition(home);
         let result: Vec<u32> = current_order(&order).iter().map(|window| window.id).collect();
-        crate::log::append(&format!(
-            "mover: перенесено {moved}, пропущено {skipped:?} за {} мс, порядок {}",
-            started.elapsed().as_millis(),
-            if result == order { "совпал" } else { "НЕ совпал" }
-        ));
+        if result != order {
+            crate::log::append(&format!("mover: порядок не совпал {result:?}, пропущено {skipped:?}"));
+        }
         DispatchQueue::main().exec_async(|| {
             let mtm = MainThreadMarker::new().expect("main queue");
             if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
@@ -214,8 +207,9 @@ fn stable_chain(order: &[u32], current: &[u32], pinned: &HashSet<u32>) -> Vec<u3
 /// переноса (`after_move`) сначала ждём, пока строка меню успокоится; бросаем на
 /// ближний край соседа со стороны, откуда едет иконка.
 fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>, after_move: bool) -> Outcome {
-    let started = Instant::now();
-    let waited = if after_move { wait_until_still() } else { 0 };
+    if after_move {
+        wait_until_still();
+    }
     let layout = crate::capture::icon_layout();
     let Some(item) = layout.iter().find(|window| window.id == id) else { return Outcome::Skipped };
     if !item.onscreen {
@@ -232,7 +226,6 @@ fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>, after_move: bo
     let after_left = left.is_none_or(|window| window.x < item.x);
     let before_right = right.is_none_or(|window| item.x < window.x);
     if after_left && before_right {
-        crate::log::append(&format!("mover: окно {id} уже на месте"));
         return Outcome::Skipped;
     }
     let target_x = match (left, right) {
@@ -245,14 +238,10 @@ fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>, after_move: bo
     let preferred = PREFERRED.load(Ordering::Relaxed);
     let attempts = std::iter::once(preferred).chain((0..METHODS.len()).filter(|&m| m != preferred));
     for method in attempts {
-        let (step, via_middle, name) = METHODS[method];
+        let (step, via_middle) = METHODS[method];
         drag(from, to, step, via_middle);
         if settled(id, item.x) {
             PREFERRED.store(method, Ordering::Relaxed);
-            crate::log::append(&format!(
-                "mover: окно {id} перенесено ({name}) за {} мс, из них ожидание {waited} мс",
-                started.elapsed().as_millis()
-            ));
             return Outcome::Moved;
         }
     }
@@ -274,7 +263,7 @@ fn settled(id: u32, start_x: f64) -> bool {
     while Instant::now() < deadline {
         thread::sleep(SETTLE_POLL);
         let x = crate::capture::icon_layout().into_iter().find(|window| window.id == id).map(|window| window.x);
-        if x.is_some_and(|x| (x - start_x).abs() >= 1.0) {
+        if x.is_some_and(|x| (x - start_x).abs() >= crate::capture::POSITION_TOLERANCE) {
             return true;
         }
     }
@@ -282,13 +271,12 @@ fn settled(id: u32, start_x: f64) -> bool {
 }
 
 /// Ждёт, пока строка меню доиграет анимацию: `STILL_READS` замеров подряд совпали
-/// с предыдущим. Возвращает, сколько миллисекунд ждали.
-pub fn wait_until_still() -> u128 {
-    let started = Instant::now();
+/// с предыдущим.
+pub fn wait_until_still() {
     let positions = || -> Vec<(u32, f64)> {
         crate::capture::icon_layout().iter().map(|window| (window.id, window.x)).collect()
     };
-    let deadline = started + STILL_TIMEOUT;
+    let deadline = Instant::now() + STILL_TIMEOUT;
     let mut last = positions();
     let mut unchanged = 0;
     while Instant::now() < deadline {
@@ -297,7 +285,7 @@ pub fn wait_until_still() -> u128 {
         if now == last {
             unchanged += 1;
             if unchanged == STILL_READS {
-                return started.elapsed().as_millis();
+                return;
             }
         } else {
             unchanged = 0;
@@ -305,7 +293,6 @@ pub fn wait_until_still() -> u128 {
         }
     }
     crate::log::append("mover: строка меню не успокоилась — считаю по последнему замеру");
-    started.elapsed().as_millis()
 }
 
 /// Cmd+drag: нажать, (провести через середину,) довести до цели и отпустить.

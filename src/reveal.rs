@@ -84,7 +84,6 @@ pub fn enter(divider_id: u32, gap: CGRect, wide: f64) {
         mode.generation
     });
     thread::spawn(move || {
-        let started = Instant::now();
         let Some(image) = crate::capture::screen_rect(gap) else {
             crate::log::append("reveal: снимка полосы нет — узкий режим не включаю");
             on_main(move |_| {
@@ -113,11 +112,7 @@ pub fn enter(divider_id: u32, gap: CGRect, wide: f64) {
         });
         wait_divider(divider_id, true);
         crate::mover::wait_until_still();
-        log_layout(gap);
         let strip = strip_of(&image, gap, divider_id);
-        let strip_label = strip
-            .as_ref()
-            .map_or("на всю полосу".into(), |(_, rect)| format!("x={} w={}", rect.origin.x, rect.size.width));
         thread::sleep(PRESS_DELAY);
         on_main(move |mtm| {
             let pending = MODE.with_borrow_mut(|mode| {
@@ -134,10 +129,6 @@ pub fn enter(divider_id: u32, gap: CGRect, wide: f64) {
                 press_now(icon_id);
             }
         });
-        crate::log::append(&format!(
-            "reveal: узкий режим готов за {} мс, шторка {strip_label}",
-            started.elapsed().as_millis()
-        ));
     });
 }
 
@@ -163,7 +154,6 @@ pub fn exit(divider_id: Option<u32>) {
                 }
             })
         });
-        crate::log::append("reveal: узкий режим выключен");
     });
 }
 
@@ -173,7 +163,6 @@ pub fn exit_now(mtm: MainThreadMarker) {
     let Some((_, wide)) = switch_off() else { return };
     MODE.with_borrow_mut(hide_shroud);
     set_divider(mtm, wide);
-    crate::log::append("reveal: узкий режим выключен сразу");
 }
 
 /// Переводит режим в выключенный: шаги прежнего включения и нажатия его больше не застают.
@@ -205,10 +194,7 @@ pub fn press(icon_id: u32) -> bool {
             press_now(icon_id);
             true
         }
-        _ => {
-            crate::log::append(&format!("reveal: окно {icon_id} нажму, когда освободится"));
-            true
-        }
+        _ => true,
     }
 }
 
@@ -220,13 +206,8 @@ fn press_now(icon_id: u32) {
     });
     let pid = crate::click::owner_pid(icon_id);
     thread::spawn(move || {
-        let started = Instant::now();
         let windows_before = pid.map(crate::capture::onscreen_windows_of).unwrap_or_default();
         crate::click::click_window(icon_id);
-        crate::log::append(&format!(
-            "reveal: окно {icon_id} нажато через {} мс",
-            started.elapsed().as_millis()
-        ));
         wait_menu_closed(pid, &windows_before);
         on_main(move |_| {
             let pending = MODE.with_borrow_mut(|mode| {
@@ -256,16 +237,6 @@ fn strip_of(image: &CGImage, gap: CGRect, divider_id: u32) -> Option<(CFRetained
     let crop = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(pixels, CGImage::height(Some(image)) as f64));
     let cropped = CGImage::with_image_in_rect(Some(image), crop)?;
     Some((cropped, CGRect::new(gap.origin, CGSize::new(pixels / scale, gap.size.height))))
-}
-
-/// Пишет в лог окна иконок левее конца полосы: `*` — нарисовано.
-fn log_layout(gap: CGRect) {
-    let windows: Vec<String> = crate::capture::icon_layout()
-        .iter()
-        .filter(|w| w.x < gap.origin.x + gap.size.width)
-        .map(|w| format!("{}@{}+{}{}", w.id, w.x, w.width, if w.onscreen { "*" } else { "" }))
-        .collect();
-    crate::log::append(&format!("reveal: раскладка в узком режиме {}", windows.join(" ")));
 }
 
 fn show_shroud(mode: &mut Mode, mtm: MainThreadMarker, image: &CGImage, rect: CGRect) {
@@ -309,7 +280,6 @@ fn wait_menu_closed(pid: Option<i32>, windows_before: &[u32]) {
         }
         thread::sleep(MENU_POLL);
     };
-    crate::log::append(&format!("reveal: меню открыто, окно {menu}"));
     let close_deadline = Instant::now() + MENU_MAX_OPEN;
     while crate::capture::onscreen_windows_of(pid).contains(&menu) {
         if Instant::now() > close_deadline {
@@ -318,7 +288,6 @@ fn wait_menu_closed(pid: Option<i32>, windows_before: &[u32]) {
         }
         thread::sleep(MENU_POLL);
     }
-    crate::log::append("reveal: меню закрыто");
 }
 
 fn on_main(work: impl FnOnce(MainThreadMarker) + Send) {

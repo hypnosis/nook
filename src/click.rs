@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::Mutex;
-use std::time::Instant;
 
 use dispatch2::DispatchQueue;
 use objc2::runtime::AnyObject;
@@ -56,18 +55,8 @@ pub fn remember_owners(ids: Vec<u32>, notify: bool) {
     }
     let pids = running_pids();
     std::thread::spawn(move || {
-        let started = Instant::now();
         let found = match_windows(&missing, &pids);
-        let mut cache = CACHE.lock().unwrap();
-        let cache = cache.get_or_insert_with(HashMap::new);
-        let count = found.len();
-        cache.extend(found);
-        crate::log::append(&format!(
-            "click: кэш +{count} из {} за {} мс, всего {}",
-            missing.len(),
-            started.elapsed().as_millis(),
-            cache.len()
-        ));
+        CACHE.lock().unwrap().get_or_insert_with(HashMap::new).extend(found);
         if notify {
             notify_remembered();
         }
@@ -99,22 +88,16 @@ pub fn click_window(id: u32) {
     }
     let pids = running_pids();
     std::thread::spawn(move || {
-        let started = Instant::now();
         let cached = CACHE.lock().unwrap().as_mut().and_then(|cache| cache.remove(&id));
-        let from_cache = cached.is_some();
         let item = cached.or_else(|| match_windows(&[id], &pids).into_iter().next().map(|(_, item)| item));
         let Some(item) = item else {
             crate::log::append(&format!("click: для окна {id} иконки в AX нет"));
             return;
         };
-        let found_ms = started.elapsed().as_millis();
         let result = unsafe { item.element.perform_action(&CFString::from_static_str("AXPress")) };
-        crate::log::append(&format!(
-            "click: окно {id} pid {} (кэш {from_cache}) найдено за {found_ms} мс, AXPress → {} за {} мс",
-            item.pid,
-            result.0,
-            started.elapsed().as_millis() - found_ms
-        ));
+        if result.0 != 0 {
+            crate::log::append(&format!("click: AXPress по окну {id} — ошибка {}", result.0));
+        }
         CACHE.lock().unwrap().get_or_insert_with(HashMap::new).insert(id, item);
     });
 }

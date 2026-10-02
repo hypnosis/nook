@@ -29,21 +29,19 @@ pub fn is_enabled() -> bool {
 ///
 /// Ошибка регистрации — внешняя нестабильность (ServiceManagement отказал):
 /// логируем с контекстом и не паникуем, приложение продолжает работать.
-/// Путь bundle пишем в лог, чтобы при разборе было видно, что зарегистрировали.
 pub fn toggle() {
     let service = unsafe { SMAppService::mainAppService() };
 
     // SAFETY: вызовы register/unregister на валидном объекте service.
     let result = unsafe {
         if is_enabled() {
-            service.unregisterAndReturnError().map(|_| "автозапуск выключен")
+            service.unregisterAndReturnError()
         } else {
-            service.registerAndReturnError().map(|_| "автозапуск включён")
+            service.registerAndReturnError()
         }
     };
 
-    match result {
-        Ok(action) => crate::log::append(action),
-        Err(error) => crate::log::append(&format!("автозапуск: ошибка — {error:?}")),
+    if let Err(error) = result {
+        crate::log::append(&format!("автозапуск: ошибка — {error:?}"));
     }
 }

@@ -55,6 +55,7 @@ impl Panel {
         };
         unsafe { window.setReleasedWhenClosed(false) };
         window.setLevel(NSStatusWindowLevel);
+        window.setBecomesKeyOnlyIfNeeded(true);
         window.setTitlebarAppearsTransparent(true);
         window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
         for button in [
@@ -80,7 +81,6 @@ impl Panel {
         let bottom = top - PANEL_HEIGHT - PANEL_GAP;
         if !self.has_icons() {
             self.pending = Some((right, bottom));
-            crate::log::append("панель: жду снимков, пока не показываю");
             return;
         }
         self.place(right, bottom);
@@ -91,7 +91,6 @@ impl Panel {
         let origin = NSPoint::new(right - width, bottom);
         self.window.setFrameOrigin(origin);
         self.window.orderFrontRegardless();
-        crate::log::append(&format!("панель: показана x={} y={}", origin.x, origin.y));
     }
 
     /// Запоминает снимки для текущей темы и перерисовывает панель. Для другой темы
@@ -141,7 +140,6 @@ impl Panel {
         }
         self.theme = theme;
         self.render(mtm, target);
-        crate::log::append(&format!("панель: тема {theme:?}"));
     }
 
     /// Ставит клоны иконок в ряд и подгоняет ширину, правый край остаётся на месте.
@@ -164,6 +162,7 @@ impl Panel {
                 )
             };
             view.setBordered(false);
+            view.setRefusesFirstResponder(true);
             view.setTag(id as isize);
             let y = ((PANEL_HEIGHT - size.height) / 2.0).max(0.0);
             view.setFrame(NSRect::new(NSPoint::new(x, y), size));
@@ -181,7 +180,6 @@ impl Panel {
             ),
             true,
         );
-        crate::log::append(&format!("панель: иконок {} ширина {width}", icons.images.len()));
     }
 
     /// Меняет картинки в тех же кнопках, если набор и размеры иконок прежние:

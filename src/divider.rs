@@ -40,13 +40,11 @@ pub fn create(mtm: MainThreadMarker) -> Retained<NSStatusItem> {
         let blank = NSImage::initWithSize(NSImage::alloc(), NSSize::new(1.0, 1.0));
         button.setImage(Some(&blank));
     }
-    crate::log::append(&format!("divider: создан, autosave='{AUTOSAVE}'"));
     item
 }
 
 pub fn remove(item: &NSStatusItem) {
     NSStatusBar::systemStatusBar().removeStatusItem(item);
-    crate::log::append("divider: удалён");
 }
 
 /// Ширина, при которой разделитель (окно `divider_id`) прячет иконки левее себя,
@@ -58,10 +56,10 @@ pub fn hiding_width(divider_id: u32) -> f64 {
     };
     let panel_width: f64 = layout
         .iter()
-        .filter(|window| window.x < divider_x - 1.0)
+        .filter(|window| window.x < divider_x - crate::capture::POSITION_TOLERANCE)
         .map(|window| window.width)
         .sum();
-    let Some(next_x) = layout.iter().find(|window| window.x > divider_x + 1.0).map(|window| window.x) else {
+    let Some(next_x) = layout.iter().find(|window| window.x > divider_x + crate::capture::POSITION_TOLERANCE).map(|window| window.x) else {
         return MIN_HIDING_WIDTH;
     };
     let width = next_x - WINDOW_CHROME - panel_width - SCREEN_MARGIN;
@@ -71,6 +69,5 @@ pub fn hiding_width(divider_id: u32) -> f64 {
         ));
     }
     let width = width.max(MIN_HIDING_WIDTH);
-    crate::log::append(&format!("divider: ширина {width} (панель {panel_width} pt, справа x={next_x})"));
     width
 }
