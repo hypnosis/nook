@@ -10,7 +10,10 @@
 //! конфигурации мы просто ничего не делаем.
 
 use std::cell::{Cell, RefCell};
+use std::thread;
+use std::time::{Duration, Instant};
 
+use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
 use objc2::MainThreadMarker;
@@ -18,7 +21,8 @@ use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly, Message};
 use objc2::sel;
 use objc2_app_kit::{
     NSApplication, NSApplicationDelegate, NSButton, NSControlStateValueOn, NSEventType, NSImage,
-    NSScreen, NSStatusItem, NSSwitch, NSWindowDidMoveNotification,
+    NSScreen, NSStatusItem, NSSwitch, NSWindowDidMoveNotification, NSWorkspace,
+    NSWorkspaceActiveSpaceDidChangeNotification,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
@@ -59,6 +63,8 @@ const PLACEMENT_MAX_ATTEMPTS: u32 = 30;
 /// Пауза после раскрытия, чтобы окна иконок встали на места перед съёмкой.
 // HARDCODE: задержка съёмки иконок; вынести в конфиг позже.
 const PANEL_CAPTURE_DELAY: f64 = 0.3;
+/// Шаг опроса, вышел ли разделитель на экран после раскрытия.
+const PANEL_SETTLE_POLL: Duration = Duration::from_millis(5);
 /// Пауза, чтобы macOS разложила окна строки меню после смены ширин.
 // HARDCODE: пауза перед перестановкой иконок; вынести в конфиг позже.
 const APPLY_SETTLE_DELAY: f64 = 0.4;
@@ -110,8 +116,8 @@ pub struct ControllerIvars {
     divider_window: Cell<Option<u32>>,
     /// Мышь отвязана от курсора на время переноса.
     mouse_taken: Cell<bool>,
-    /// Открыто меню иконки у чёлки: разделитель сужен, строка под шторкой.
-    revealing: Cell<bool>,
+    /// Окна иконок панели из последнего снимка в обычном режиме.
+    panel_ids: RefCell<Vec<u32>>,
 }
 
 define_class!(
@@ -126,6 +132,7 @@ define_class!(
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn did_finish_launching(&self, _notification: &NSNotification) {
             crate::log::append("applicationDidFinishLaunching: создаю айтемы");
+            crate::probe::watch_clicks();
 
             let mtm = self.mtm();
             let target: &AnyObject = self.as_ref();
@@ -148,6 +155,14 @@ define_class!(
                 );
             }
             crate::theme::observe(target);
+            unsafe {
+                NSWorkspace::sharedWorkspace().notificationCenter().addObserver_selector_name_object(
+                    target,
+                    sel!(onSpaceChanged:),
+                    Some(NSWorkspaceActiveSpaceDidChangeNotification),
+                    None,
+                );
+            }
 
             // FALLBACK-таймер: если айтем ЗАЛИП на x=0 без события — пересоздаёт его
             // (retry + эскалация). Размещение асинхронно, поэтому через таймер, а не
@@ -223,8 +238,10 @@ define_class!(
         }
 
         /// Открыт раздел «Расположение»: раскрываем строку и снимаем иконки левее ≡◂.
+        /// Взведённый таймер сворачивания гасим, иначе он спрячет иконки посреди снимка.
         #[unsafe(method(onEditorNeedsIcons))]
         fn on_editor_needs_icons(&self) {
+            self.cancel_collapse_timer();
             if self.ivars().hidden.get() {
                 self.toggle();
             }
@@ -277,6 +294,7 @@ define_class!(
                 return;
             }
             self.set_applying(true);
+            crate::reveal::exit(None);
             self.ivars().apply_waits.set(0);
             if self.ivars().hidden.get() {
                 self.toggle();
@@ -527,9 +545,18 @@ define_class!(
         /// Окна иконок встали после раскрытия — снимаем те, что ушли под чёлку.
         #[unsafe(method(onPanelCapture:))]
         fn on_panel_capture(&self, _timer: *mut AnyObject) {
-            if !self.ivars().hidden.get() && !self.ivars().revealing.get() {
-                crate::capture::capture_under_notch(self.ivars().divider_window.get());
+            if self.ivars().hidden.get() {
+                return;
             }
+            if crate::reveal::is_on() {
+                if !crate::reveal::menu_open() {
+                    crate::capture::capture_ids(&self.ivars().panel_ids.borrow());
+                }
+                return;
+            }
+            let ids = crate::capture::capture_under_notch(self.ivars().divider_window.get());
+            *self.ivars().panel_ids.borrow_mut() = ids;
+            self.enter_narrow_mode();
         }
 
         /// Снимки иконок под чёлкой готовы.
@@ -601,30 +628,29 @@ define_class!(
         #[unsafe(method(onCloneClick:))]
         fn on_clone_click(&self, sender: &NSButton) {
             let icon_id = sender.tag() as u32;
-            if self.ivars().revealing.get() {
+            if let Some(event) = NSApplication::sharedApplication(self.mtm()).currentEvent() {
+                crate::log::append(&format!(
+                    "клон: клик по {icon_id}, отпускание {} мс назад",
+                    crate::probe::event_lag_ms(&event)
+                ));
+            }
+            if crate::reveal::press(icon_id) {
                 return;
             }
-            let wide = self.ivars().divider.borrow().as_ref().map(|divider| divider.length());
-            let target = self.ivars().divider_window.get().zip(self.notch_gap()).zip(wide);
-            match target {
-                Some(((divider_id, gap), wide)) if wide > crate::divider::NARROW_WIDTH => {
-                    self.ivars().revealing.set(true);
-                    crate::reveal::open_menu(crate::reveal::Reveal {
-                        icon_id,
-                        divider_id,
-                        gap,
-                        narrow: crate::divider::NARROW_WIDTH,
-                        wide,
-                    });
-                }
-                _ => crate::click::click_window(icon_id),
+            self.enter_narrow_mode();
+            if !crate::reveal::press(icon_id) {
+                crate::click::click_window(icon_id);
             }
         }
 
-        /// Меню иконки закрылось, строка вернулась.
-        #[unsafe(method(onRevealDone))]
-        fn on_reveal_done(&self) {
-            self.ivars().revealing.set(false);
+        /// Сменился рабочий стол или открылось окно на весь экран — сворачиваем, чтобы
+        /// шторка не осталась поверх чужого экрана.
+        #[unsafe(method(onSpaceChanged:))]
+        fn on_space_changed(&self, _notification: &NSNotification) {
+            if !self.ivars().hidden.get() && crate::reveal::is_on() {
+                crate::log::append("рабочий стол сменился — сворачиваю");
+                self.toggle();
+            }
         }
 
         /// Таймер коллапса дожил: мышь была вне полоса COLLAPSE_DELAY секунд.
@@ -632,7 +658,7 @@ define_class!(
         #[unsafe(method(onAutoCollapse:))]
         fn on_auto_collapse(&self, _timer: *mut AnyObject) {
             self.ivars().collapse_timer.borrow_mut().take();
-            if self.ivars().hidden.get() || self.ivars().applying.get() || self.ivars().revealing.get() {
+            if self.ivars().hidden.get() || self.ivars().applying.get() || crate::reveal::menu_open() {
                 return;
             }
             crate::log::append("авто-collapse: мышь ушла, сворачиваю");
@@ -662,7 +688,7 @@ impl Controller {
             apply_waits: Cell::new(0),
             divider_window: Cell::new(None),
             mouse_taken: Cell::new(false),
-            revealing: Cell::new(false),
+            panel_ids: RefCell::new(Vec::new()),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -690,6 +716,9 @@ impl Controller {
             (SPACER_WIDTH_SHOWN, ANCHOR_SYMBOL_SHOWN)
         };
 
+        if going_to_hide {
+            crate::reveal::exit_now(self.mtm());
+        }
         items.spacer.setLength(spacer_width);
         status_bar::set_anchor_symbol(items, self.mtm(), anchor_symbol);
 
@@ -716,6 +745,7 @@ impl Controller {
             if let Some(panel) = panel.as_mut() {
                 panel.hide();
             }
+            self.leave_narrow_mode();
             if let Some(timer) = self.ivars().panel_refresh_timer.borrow_mut().take() {
                 timer.invalidate();
             }
@@ -728,16 +758,8 @@ impl Controller {
             .get_or_insert_with(|| Panel::new(self.mtm()))
             .show_below(&anchor_window);
         crate::log::append("panel: открыта");
+        self.capture_panel_when_settled();
         let target: &AnyObject = self.as_ref();
-        unsafe {
-            NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-                PANEL_CAPTURE_DELAY,
-                target,
-                sel!(onPanelCapture:),
-                None,
-                false,
-            );
-        }
         let refresh = unsafe {
             NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
                 PANEL_REFRESH_INTERVAL,
@@ -901,6 +923,47 @@ impl Controller {
         let Some(gap) = self.notch_gap() else { return false };
         crate::probe::run(gap, crate::divider::NARROW_WIDTH, wide);
         true
+    }
+
+    /// Включает узкий режим панели, если панель открыта, в ней есть иконки и у чёлки есть место.
+    fn enter_narrow_mode(&self) {
+        let panel_visible = self.ivars().panel.borrow().as_ref().is_some_and(Panel::is_visible);
+        if !panel_visible || self.ivars().applying.get() || self.ivars().panel_ids.borrow().is_empty() {
+            return;
+        }
+        let wide = self.ivars().divider.borrow().as_ref().map(|divider| divider.length());
+        let target = self.ivars().divider_window.get().zip(wide).filter(|(_, wide)| *wide > crate::divider::NARROW_WIDTH);
+        if let Some(((divider_id, wide), gap)) = target.zip(self.notch_gap()) {
+            crate::reveal::enter(divider_id, gap, wide);
+        }
+    }
+
+    /// Выключает узкий режим: разделитель получит прежнюю длину.
+    fn leave_narrow_mode(&self) {
+        crate::reveal::exit(self.ivars().divider_window.get());
+    }
+
+    /// Снимает панель, как только раскрытая строка встала: разделитель вышел на экран
+    /// и окна иконок перестали двигаться. Разделителя не дождались — снимаем по таймауту.
+    fn capture_panel_when_settled(&self) {
+        let divider_id = self.ivars().divider_window.get();
+        thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs_f64(PANEL_CAPTURE_DELAY);
+            let divider_shown = || {
+                crate::capture::icon_layout().iter().any(|window| Some(window.id) == divider_id && window.x >= 0.0)
+            };
+            while divider_id.is_some() && !divider_shown() && Instant::now() < deadline {
+                thread::sleep(PANEL_SETTLE_POLL);
+            }
+            crate::mover::wait_until_still();
+            DispatchQueue::main().exec_async(|| {
+                let mtm = MainThreadMarker::new().expect("main queue");
+                if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
+                    let delegate: &AnyObject = delegate.as_ref();
+                    let _: () = unsafe { msg_send![delegate, onPanelCapture: std::ptr::null_mut::<AnyObject>()] };
+                }
+            });
+        });
     }
 
     /// Участок строки меню от правого края чёлки до ≡◂, в координатах CG: только здесь

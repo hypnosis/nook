@@ -4,13 +4,16 @@
 
 use std::cell::RefCell;
 use std::ffi::c_void;
+use std::ptr::NonNull;
 use std::thread;
 use std::time::Duration;
 
+use block2::RcBlock;
 use dispatch2::DispatchQueue;
+use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{msg_send, MainThreadMarker};
-use objc2_app_kit::NSApplication;
+use objc2::{class, msg_send, MainThreadMarker};
+use objc2_app_kit::{NSApplication, NSEvent, NSEventMask, NSEventType};
 use objc2_core_foundation::{CGRect, CGSize};
 use objc2_core_graphics::{CGBitmapContextCreate, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo};
 
@@ -23,6 +26,36 @@ const HOLD: Duration = Duration::from_millis(2500);
 
 thread_local! {
     static SHROUD: RefCell<Option<Shroud>> = const { RefCell::new(None) };
+    static CLICK_WATCH: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
+}
+
+/// Пишет в лог каждое нажатие и отпускание мыши в окнах Nook и через сколько
+/// событие дошло до приложения.
+pub fn watch_clicks() {
+    let handler = RcBlock::new(|event: NonNull<NSEvent>| -> *mut NSEvent {
+        let info = unsafe { event.as_ref() };
+        let kind = if info.r#type() == NSEventType::LeftMouseDown { "нажата" } else { "отпущена" };
+        crate::log::append(&format!(
+            "мышь: {kind} в окне {}, дошла за {} мс",
+            info.windowNumber(),
+            event_lag_ms(info)
+        ));
+        event.as_ptr()
+    });
+    let token = unsafe {
+        NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+            NSEventMask::LeftMouseDown | NSEventMask::LeftMouseUp,
+            &handler,
+        )
+    };
+    CLICK_WATCH.with(|cell| *cell.borrow_mut() = token);
+}
+
+/// Сколько миллисекунд прошло с момента события.
+pub fn event_lag_ms(event: &NSEvent) -> i64 {
+    let info: *mut AnyObject = unsafe { msg_send![class!(NSProcessInfo), processInfo] };
+    let uptime: f64 = unsafe { msg_send![info, systemUptime] };
+    ((uptime - event.timestamp()) * 1000.0).round() as i64
 }
 
 /// Есть ли метка; метка удаляется, чтобы проба шла один раз.

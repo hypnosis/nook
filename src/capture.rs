@@ -62,6 +62,11 @@ pub fn capture_under_notch(own_id: Option<u32>) -> Vec<u32> {
     capture(windows, Receiver::Panel)
 }
 
+/// Снимает иконки с окнами `ids` и отдаёт их делегату, как `capture_under_notch`.
+pub fn capture_ids(ids: &[u32]) {
+    capture(icon_windows(|w| ids.contains(&w.id)), Receiver::Panel);
+}
+
 /// Снимает все иконки левее `limit_x` (левый край ≡◂) для редактора и отдаёт их
 /// делегату через `setEditorIcons:ids:`. `own_id` — как в `capture_under_notch`.
 pub fn capture_left_of(limit_x: f64, own_id: Option<u32>) {

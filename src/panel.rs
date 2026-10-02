@@ -148,6 +148,9 @@ impl Panel {
     /// Клик по клону зовёт `onCloneClick:` у target; tag кнопки — номер окна настоящей иконки.
     fn render(&self, mtm: MainThreadMarker, target: &AnyObject) {
         let Some(icons) = self.cache[self.theme.index()].as_ref() else { return };
+        if self.update_in_place(icons) {
+            return;
+        }
         let content = NSView::new(mtm);
         let mut x = PANEL_PADDING;
         for (image, &id) in icons.images.iter().zip(&icons.ids) {
@@ -179,6 +182,27 @@ impl Panel {
             true,
         );
         crate::log::append(&format!("панель: иконок {} ширина {width}", icons.images.len()));
+    }
+
+    /// Меняет картинки в тех же кнопках, если набор и размеры иконок прежние:
+    /// пересозданная кнопка теряет клик, пришедшийся на обновление.
+    fn update_in_place(&self, icons: &Icons) -> bool {
+        let Some(content) = self.window.contentView() else { return false };
+        let buttons: Vec<Retained<NSButton>> =
+            content.subviews().iter().filter_map(|view| view.downcast::<NSButton>().ok()).collect();
+        let unchanged = buttons.len() == icons.ids.len()
+            && buttons
+                .iter()
+                .zip(&icons.ids)
+                .zip(&icons.images)
+                .all(|((button, &id), image)| button.tag() as u32 == id && button.frame().size == image.size());
+        if !unchanged {
+            return false;
+        }
+        for (button, image) in buttons.iter().zip(&icons.images) {
+            button.setImage(Some(image));
+        }
+        true
     }
 
     pub fn hide(&mut self) {
