@@ -144,6 +144,7 @@ define_class!(
                     None,
                 );
             }
+            crate::theme::observe(target);
 
             // FALLBACK-таймер: если айтем ЗАЛИП на x=0 без события — пересоздаёт его
             // (retry + эскалация). Размещение асинхронно, поэтому через таймер, а не
@@ -394,6 +395,21 @@ define_class!(
         fn on_divider_placed(&self, _timer: *mut AnyObject) {
             self.find_divider_window(&[]);
             self.widen_divider();
+            let target: &AnyObject = self.as_ref();
+            unsafe {
+                NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                    PANEL_CAPTURE_DELAY,
+                    target,
+                    sel!(onStartupSnapshot:),
+                    None,
+                    false,
+                );
+            }
+        }
+
+        /// Разделитель расширен и иконки панели спрятаны — снимаем их.
+        #[unsafe(method(onStartupSnapshot:))]
+        fn on_startup_snapshot(&self, _timer: *mut AnyObject) {
             self.start_startup_snapshot();
         }
 
@@ -530,6 +546,29 @@ define_class!(
             }
         }
 
+        /// Тема macOS сменилась: панель сразу берёт снимки из кэша новой темы,
+        /// а открытая панель ещё и переснимается, когда строка меню перерисуется.
+        #[unsafe(method(onThemeChanged:))]
+        fn on_theme_changed(&self, _notification: &NSNotification) {
+            let theme = crate::theme::current();
+            crate::log::append(&format!("тема: {theme:?}"));
+            let target: &AnyObject = self.as_ref();
+            let mut panel = self.ivars().panel.borrow_mut();
+            let Some(panel) = panel.as_mut() else { return };
+            panel.set_theme(self.mtm(), target, theme);
+            if panel.is_visible() {
+                unsafe {
+                    NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                        PANEL_CAPTURE_DELAY,
+                        target,
+                        sel!(onPanelCapture:),
+                        None,
+                        false,
+                    );
+                }
+            }
+        }
+
         /// Кнопки иконок под чёлкой найдены в Accessibility на старте.
         #[unsafe(method(onOwnersRemembered))]
         fn on_owners_remembered(&self) {
@@ -627,7 +666,7 @@ impl Controller {
     fn sync_panel(&self, items: &StatusItems, hidden: bool) {
         let mut panel = self.ivars().panel.borrow_mut();
         if hidden || !crate::settings::show_panel() {
-            if let Some(panel) = panel.as_ref() {
+            if let Some(panel) = panel.as_mut() {
                 panel.hide();
             }
             if let Some(timer) = self.ivars().panel_refresh_timer.borrow_mut().take() {

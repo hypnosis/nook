@@ -21,6 +21,7 @@ mod panel;
 mod settings;
 mod status_bar;
 mod strings;
+mod theme;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;

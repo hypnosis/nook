@@ -1,13 +1,19 @@
 //! Панель под строкой меню: показывается, пока иконки раскрыты.
+//!
+//! Снимки иконок хранятся отдельно для светлой и тёмной темы, поэтому смена темы
+//! перерисовывает панель сразу. Пустой панель не показывается: она ждёт снимков,
+//! а без иконок не появляется вовсе.
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, sel, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSBackingStoreType, NSButton, NSColor, NSEvent, NSImage, NSPanel, NSStatusWindowLevel,
-    NSView, NSWindow, NSWindowStyleMask,
+    NSBackingStoreType, NSButton, NSEvent, NSImage, NSPanel, NSStatusWindowLevel, NSView,
+    NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSArray, NSNumber, NSPoint, NSRect, NSSize};
+
+use crate::theme::{self, Theme};
 
 // HARDCODE: размеры панели; вынести в конфиг позже.
 const PANEL_WIDTH: f64 = 240.0;
@@ -16,8 +22,20 @@ const PANEL_GAP: f64 = 4.0;
 const ICON_SPACING: f64 = 4.0;
 const PANEL_PADDING: f64 = 8.0;
 
+/// Снимки иконок для одной темы.
+struct Icons {
+    ids: Vec<u32>,
+    images: Vec<Retained<NSImage>>,
+    /// Снято в этой теме; иначе это инверсия снимков из другой темы.
+    real: bool,
+}
+
 pub struct Panel {
     window: Retained<NSPanel>,
+    theme: Theme,
+    cache: [Option<Icons>; 2],
+    /// Куда поставить панель, когда придут снимки: правый край и низ.
+    pending: Option<(f64, f64)>,
 }
 
 impl Panel {
@@ -35,52 +53,109 @@ impl Panel {
         };
         unsafe { window.setReleasedWhenClosed(false) };
         window.setLevel(NSStatusWindowLevel);
-        window.setBackgroundColor(Some(&NSColor::colorWithWhite_alpha(0.12, 0.95)));
+        let theme = theme::current();
+        window.setBackgroundColor(Some(&theme::panel_background(theme)));
         window.setHasShadow(true);
-        Self { window }
+        Self { window, theme, cache: [None, None], pending: None }
     }
 
-    /// Показывает панель под строкой меню, правым краем у окна якоря.
-    pub fn show_below(&self, anchor_window: &NSWindow) {
+    /// Показывает панель под строкой меню, правым краем у окна якоря. Если снимков
+    /// для текущей темы ещё нет, панель появится, когда они придут.
+    pub fn show_below(&mut self, anchor_window: &NSWindow) {
         let Some(screen) = anchor_window.screen() else { return };
         let right = anchor_window.frame().origin.x + anchor_window.frame().size.width;
         let top = screen.visibleFrame().origin.y + screen.visibleFrame().size.height;
+        let bottom = top - PANEL_HEIGHT - PANEL_GAP;
+        if !self.has_icons() {
+            self.pending = Some((right, bottom));
+            crate::log::append("панель: жду снимков, пока не показываю");
+            return;
+        }
+        self.place(right, bottom);
+    }
+
+    fn place(&self, right: f64, bottom: f64) {
         let width = self.window.frame().size.width;
-        let origin = NSPoint::new(right - width, top - PANEL_HEIGHT - PANEL_GAP);
+        let origin = NSPoint::new(right - width, bottom);
         self.window.setFrameOrigin(origin);
         self.window.orderFrontRegardless();
         crate::log::append(&format!("панель: показана x={} y={}", origin.x, origin.y));
     }
 
-    /// Ставит клоны иконок в ряд и подгоняет ширину, правый край остаётся на месте.
-    /// Клик по клону зовёт `onCloneClick:` у target; tag кнопки — номер окна настоящей иконки.
+    /// Запоминает снимки для текущей темы и перерисовывает панель. Для другой темы
+    /// готовит инверсию, если настоящих снимков той темы нет или набор иконок сменился.
     pub fn set_icons(
-        &self,
+        &mut self,
         mtm: MainThreadMarker,
         target: &AnyObject,
         images: &NSArray<NSImage>,
         ids: &NSArray<NSNumber>,
     ) {
+        let ids: Vec<u32> = ids.iter().map(|id| id.unsignedIntValue()).collect();
+        let fitted: Vec<Retained<NSImage>> =
+            images.iter().map(|image| theme::fit(&image, self.theme)).collect();
+        let opposite = self.theme.opposite();
+        let stale = self.cache[opposite.index()].as_ref().is_none_or(|icons| !icons.real || icons.ids != ids);
+        if stale {
+            self.cache[opposite.index()] = Some(Icons {
+                ids: ids.clone(),
+                images: fitted.iter().map(|image| theme::fit(image, opposite)).collect(),
+                real: false,
+            });
+        }
+        self.cache[self.theme.index()] = Some(Icons { ids, images: fitted, real: true });
+        self.render(mtm, target);
+        if self.has_icons() {
+            if let Some((right, bottom)) = self.pending.take() {
+                self.place(right, bottom);
+            }
+        } else if self.window.isVisible() {
+            let frame = self.window.frame();
+            self.pending = Some((frame.origin.x + frame.size.width, frame.origin.y));
+            self.window.orderOut(None);
+        }
+    }
+
+    /// Есть что показать в текущей теме.
+    fn has_icons(&self) -> bool {
+        self.cache[self.theme.index()].as_ref().is_some_and(|icons| !icons.images.is_empty())
+    }
+
+    /// Меняет фон и иконки под новую тему из кэша, без пересъёмки.
+    pub fn set_theme(&mut self, mtm: MainThreadMarker, target: &AnyObject, theme: Theme) {
+        if theme == self.theme {
+            return;
+        }
+        self.theme = theme;
+        self.window.setBackgroundColor(Some(&theme::panel_background(theme)));
+        self.render(mtm, target);
+        crate::log::append(&format!("панель: тема {theme:?}"));
+    }
+
+    /// Ставит клоны иконок в ряд и подгоняет ширину, правый край остаётся на месте.
+    /// Клик по клону зовёт `onCloneClick:` у target; tag кнопки — номер окна настоящей иконки.
+    fn render(&self, mtm: MainThreadMarker, target: &AnyObject) {
+        let Some(icons) = self.cache[self.theme.index()].as_ref() else { return };
         let content = NSView::new(mtm);
         let mut x = PANEL_PADDING;
-        for (image, id) in images.iter().zip(ids.iter()) {
+        for (image, &id) in icons.images.iter().zip(&icons.ids) {
             let size = image.size();
             let view = unsafe {
                 NSButton::buttonWithImage_target_action(
-                    &image,
+                    image,
                     Some(target),
                     Some(sel!(onCloneClick:)),
                     mtm,
                 )
             };
             view.setBordered(false);
-            view.setTag(id.unsignedIntValue() as isize);
+            view.setTag(id as isize);
             let y = ((PANEL_HEIGHT - size.height) / 2.0).max(0.0);
             view.setFrame(NSRect::new(NSPoint::new(x, y), size));
             content.addSubview(&view);
             x += size.width + ICON_SPACING;
         }
-        let width = if images.count() == 0 { PANEL_WIDTH } else { x - ICON_SPACING + PANEL_PADDING };
+        let width = if icons.images.is_empty() { PANEL_WIDTH } else { x - ICON_SPACING + PANEL_PADDING };
         let frame = self.window.frame();
         let right = frame.origin.x + frame.size.width;
         self.window.setContentView(Some(&content));
@@ -91,11 +166,16 @@ impl Panel {
             ),
             true,
         );
-        crate::log::append(&format!("панель: иконок {} ширина {width}", images.count()));
+        crate::log::append(&format!("панель: иконок {} ширина {width}", icons.images.len()));
     }
 
-    pub fn hide(&self) {
+    pub fn hide(&mut self) {
+        self.pending = None;
         self.window.orderOut(None);
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.window.isVisible()
     }
 
     /// Мышь над видимой панелью — для автосворачивания это как мышь на строке меню.
