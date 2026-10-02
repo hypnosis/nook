@@ -50,12 +50,17 @@ static PREFERRED: AtomicUsize = AtomicUsize::new(0);
 /// Окна, которые подтверждённо не принимают поддельный перенос; до перезапуска.
 static IMMOVABLE: Mutex<Option<HashSet<u32>>> = Mutex::new(None);
 
+/// Когда перенос последний раз сделал шаг; `None` — переноса нет.
+static LAST_STEP: Mutex<Option<Instant>> = Mutex::new(None);
+
 /// Чем закончилась попытка перенести одно окно.
 enum Outcome {
     Moved,
     /// Перенос был нужен, но окно не сдвинулось ни одним способом.
     Stuck,
-    /// Переносить не стали: окно не найдено, не нарисовано или уже на месте.
+    /// Перенос нужен, но иконка спрятана у чёлки: мышью её не взять.
+    Hidden,
+    /// Переносить не стали: окно не найдено или уже на месте.
     Skipped,
 }
 
@@ -70,23 +75,39 @@ pub fn release_mouse() {
     CGDisplayShowCursor(CGMainDisplayID());
 }
 
-/// Расставляет окна `order` слева направо в этом порядке. По окончании зовёт
-/// `onLayoutApplied` у делегата приложения.
-pub fn arrange(order: Vec<u32>) {
+/// Перенос идёт, но шага не было дольше `limit` — значит, завис.
+pub fn is_stalled(limit: Duration) -> bool {
+    last_step().is_some_and(|last| last.elapsed() > limit)
+}
+
+fn last_step() -> std::sync::MutexGuard<'static, Option<Instant>> {
+    LAST_STEP.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn mark_step() {
+    *last_step() = Some(Instant::now());
+}
+
+/// Расставляет окна `order` слева направо в этом порядке. `own` — наш разделитель:
+/// неподвижным он не бывает. По окончании зовёт `onLayoutApplied:` у делегата приложения
+/// с признаком, что иконку, которую надо было сдвинуть, спрятала чёлка.
+pub fn arrange(order: Vec<u32>, own: u32) {
+    mark_step();
     thread::spawn(move || {
         let home = CGEvent::location(CGEvent::new(None).as_deref());
-        let (_, skipped) = arrange_all(&order);
+        let (skipped, cramped) = arrange_all(&order, own);
         post(CGEventType::MouseMoved, home, CGEventFlags::empty());
         CGWarpMouseCursorPosition(home);
         let result: Vec<u32> = current_order(&order).iter().map(|window| window.id).collect();
         if result != order {
             crate::log::append(&format!("mover: порядок не совпал {result:?}, пропущено {skipped:?}"));
         }
-        DispatchQueue::main().exec_async(|| {
+        *last_step() = None;
+        DispatchQueue::main().exec_async(move || {
             let mtm = MainThreadMarker::new().expect("main queue");
             if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
                 let delegate: &AnyObject = delegate.as_ref();
-                let _: () = unsafe { msg_send![delegate, onLayoutApplied] };
+                let _: () = unsafe { msg_send![delegate, onLayoutApplied: cramped] };
             }
         });
     });
@@ -96,11 +117,13 @@ pub fn arrange(order: Vec<u32>) {
 /// подозреваемым: план пересчитывается так, чтобы оно стояло на месте. Неподвижным
 /// подозреваемый признаётся, только если в этом же применении сдвинулось другое окно.
 /// Если после прохода порядок всё же не совпал, делается добивочный проход.
-fn arrange_all(order: &[u32]) -> (usize, Vec<u32>) {
+/// Возвращает пропущенные окна и признак, что среди них были спрятанные чёлкой.
+fn arrange_all(order: &[u32], own: u32) -> (Vec<u32>, bool) {
     let known = immovable();
     let mut suspects: HashSet<u32> = HashSet::new();
     let mut moved = 0;
     let mut skipped = Vec::new();
+    let mut cramped = false;
     let mut corrections = 0;
     loop {
         wait_until_still();
@@ -129,7 +152,12 @@ fn arrange_all(order: &[u32]) -> (usize, Vec<u32>) {
             let after = order[..place].iter().rev().find(|previous| placed.contains(previous)).copied();
             match move_next_to(id, before, after, moved_now > 0) {
                 Outcome::Moved => moved_now += 1,
+                Outcome::Hidden => {
+                    cramped = true;
+                    skipped.push(id);
+                }
                 Outcome::Skipped => skipped.push(id),
+                Outcome::Stuck if id == own => skipped.push(id),
                 Outcome::Stuck => {
                     suspects.insert(id);
                     replan = true;
@@ -152,7 +180,7 @@ fn arrange_all(order: &[u32]) -> (usize, Vec<u32>) {
         corrections += 1;
     }
     confirm_immovable(&suspects, moved);
-    (moved, skipped)
+    (skipped, cramped)
 }
 
 /// Подозреваемые становятся неподвижными, только если перенос в целом работает.
@@ -207,15 +235,12 @@ fn stable_chain(order: &[u32], current: &[u32], pinned: &HashSet<u32>) -> Vec<u3
 /// переноса (`after_move`) сначала ждём, пока строка меню успокоится; бросаем на
 /// ближний край соседа со стороны, откуда едет иконка.
 fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>, after_move: bool) -> Outcome {
+    mark_step();
     if after_move {
         wait_until_still();
     }
     let layout = crate::capture::icon_layout();
     let Some(item) = layout.iter().find(|window| window.id == id) else { return Outcome::Skipped };
-    if !item.onscreen {
-        crate::log::append(&format!("mover: окно {id} не нарисовано (под чёлкой) — пропускаю"));
-        return Outcome::Skipped;
-    }
     let others: Vec<&IconWindow> = layout.iter().filter(|window| window.id != id).collect();
     let position = |wanted: u32| others.iter().position(|window| window.id == wanted);
     let (left, right) = match (before.and_then(position), after.and_then(position)) {
@@ -227,6 +252,10 @@ fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>, after_move: bo
     let before_right = right.is_none_or(|window| item.x < window.x);
     if after_left && before_right {
         return Outcome::Skipped;
+    }
+    if !item.onscreen {
+        crate::log::append(&format!("mover: окно {id} не нарисовано (под чёлкой) — пропускаю"));
+        return Outcome::Hidden;
     }
     let target_x = match (left, right) {
         (_, Some(next)) if item.x > next.x => next.x + DROP_OFFSET,

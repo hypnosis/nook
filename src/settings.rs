@@ -6,38 +6,40 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, Sel};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSButton, NSColor, NSControlStateValueOff, NSControlStateValueOn,
-    NSControlTextEditingDelegate, NSControlSize, NSFont, NSGridView, NSImage, NSImageView,
-    NSProgressIndicator, NSProgressIndicatorStyle, NSLayoutAttribute,
-    NSScrollView, NSSplitViewController, NSSplitViewItem, NSStackView, NSSwitch, NSTableCellView,
+    NSApplication, NSButton, NSControlSize, NSControlStateValueOff, NSControlStateValueOn,
+    NSControlTextEditingDelegate, NSImage, NSImageView, NSLayoutAttribute, NSLayoutPriority,
+    NSLayoutPriorityDragThatCanResizeWindow, NSProgressIndicator,
+    NSProgressIndicatorStyle, NSScrollView, NSSplitViewController, NSSplitViewItem,
+    NSSplitViewItemAccessoryViewController, NSStackView, NSSwitch, NSTableCellView,
     NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle,
     NSTextField, NSUserInterfaceLayoutOrientation, NSView, NSViewController, NSWindow,
-    NSWindowDidBecomeKeyNotification, NSWindowStyleMask, NSWorkspace,
+    NSWindowStyleMask,
 };
-use objc2_application_services::AXIsProcessTrusted;
-use objc2_core_graphics::CGPreflightScreenCaptureAccess;
 use objc2_foundation::{
-    NSArray, NSIndexSet, NSInteger, NSNotification, NSNotificationCenter, NSSize, NSString,
-    NSUserDefaults, NSURL,
+    NSArray, NSIndexSet, NSInteger, NSNotification, NSSize, NSString, NSUserDefaults,
 };
 
-use crate::editor::{EditorView, EDITOR_WIDTH};
+use crate::editor::EditorView;
+use crate::permissions::PermissionRows;
 use crate::strings::{self, Lang};
+use crate::ui_style::{self, button, grid, label, wrapping_label, SPACING};
 
-const ACCESSIBILITY_PANE: &str =
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
-const SCREEN_RECORDING_PANE: &str =
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
 const SHOW_PANEL_KEY: &str = "showPanel";
 const LAYOUT_PANE: usize = 1;
 
 // HARDCODE: размеры окна настроек; вынести в конфиг позже.
-const WINDOW_SIZE: NSSize = NSSize::new(780.0, 360.0);
+/// Ширина и наименьшая высота окна: выше оно становится, только если раздел не влезает.
+const WINDOW_SIZE: NSSize = NSSize::new(640.0, 360.0);
+/// Окно тянется по ширине и не уже этого.
+const WINDOW_MIN_WIDTH: f64 = 600.0;
+/// Высота окна держится наименьшей сильнее, чем её тянет мышь, но слабее подписей.
+const FIT_PRIORITY: NSLayoutPriority = NSLayoutPriorityDragThatCanResizeWindow + 1.0;
 const SIDEBAR_WIDTH: f64 = 200.0;
 const SIDEBAR_ROW_HEIGHT: f64 = 28.0;
 const CONTENT_INSET: f64 = 24.0;
+/// Редактор занимает раздел от поля до поля.
+const EDITOR_WIDTH: f64 = WINDOW_SIZE.width - SIDEBAR_WIDTH - CONTENT_INSET * 2.0;
 const CONTENT_TOP: f64 = 48.0;
-const SPACING: f64 = 12.0;
 /// Зазор между значком и подписью в строке боковой панели.
 const SIDEBAR_ICON_GAP: f64 = 6.0;
 /// Отступ строки боковой панели от левого края.
@@ -56,20 +58,20 @@ pub fn set_show_panel(on: bool) {
 
 pub struct Settings {
     window: Retained<NSWindow>,
-    _sidebar: Retained<Sidebar>,
+    sidebar: Retained<Sidebar>,
     pub editor: Retained<EditorView>,
     show_panel: Retained<NSSwitch>,
     login: Retained<NSSwitch>,
-    permissions: [(Retained<NSTextField>, Retained<NSButton>); 2],
+    permissions: PermissionRows,
     apply: Retained<NSButton>,
     progress: Retained<NSProgressIndicator>,
     progress_label: Retained<NSTextField>,
-    lang: Lang,
+    apply_note: Retained<NSTextField>,
 }
 
 impl Settings {
     /// `target` — контроллер: `onToggleShowPanel:`, `onToggleLogin:`, `onOpenAccessibility:`,
-    /// `onOpenScreenRecording:`, `onSettingsFocus:`, `onApplyLayout:`.
+    /// `onOpenScreenRecording:`, `onApplyLayout:`.
     pub fn new(mtm: MainThreadMarker, target: &AnyObject, lang: Lang) -> Self {
         let show_panel = switch(mtm, target, sel!(onToggleShowPanel:));
         let login = switch(mtm, target, sel!(onToggleLogin:));
@@ -79,67 +81,47 @@ impl Settings {
                 mtm,
                 &[
                     [
-                        &*label(mtm, strings::settings_show_panel(lang)) as &NSView,
+                        &*wrapping_label(mtm, strings::settings_show_panel(lang)) as &NSView,
                         &*show_panel,
                     ],
-                    [&*label(mtm, strings::menu_login(lang)), &*login],
-                    [
-                        &*label(mtm, strings::settings_version(lang)),
-                        &*label(mtm, env!("CARGO_PKG_VERSION")),
-                    ],
+                    [&*wrapping_label(mtm, strings::menu_login(lang)), &*login],
                 ],
             )],
         );
 
-        let editor = EditorView::new(mtm, lang);
-        editor.setTranslatesAutoresizingMaskIntoConstraints(false);
-        editor
-            .widthAnchor()
-            .constraintEqualToConstant(EDITOR_WIDTH)
-            .setActive(true);
-        editor
-            .heightAnchor()
-            .constraintEqualToConstant(EditorView::height())
-            .setActive(true);
-        let hint = label(mtm, strings::editor_hint(lang));
-        hint.setTextColor(Some(&NSColor::secondaryLabelColor()));
-        let apply = button(mtm, strings::editor_apply(lang), target, sel!(onApplyLayout:));
+        let hint = wrapping_label(mtm, strings::editor_hint(lang));
+        hint.setTextColor(Some(&ui_style::secondary_label_color()));
+        let editor = EditorView::new(mtm, lang, EDITOR_WIDTH);
+        let apply = button(
+            mtm,
+            strings::editor_apply(lang),
+            target,
+            sel!(onApplyLayout:),
+        );
         let progress = NSProgressIndicator::new(mtm);
         progress.setStyle(NSProgressIndicatorStyle::Spinning);
         progress.setControlSize(NSControlSize::Small);
         progress.setIndeterminate(true);
         progress.setDisplayedWhenStopped(false);
         let progress_label = label(mtm, strings::editor_applying(lang));
-        progress_label.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        progress_label.setTextColor(Some(&ui_style::secondary_label_color()));
         progress_label.setHidden(true);
         let apply_row = NSStackView::stackViewWithViews(
             &NSArray::from_slice(&[&*apply as &NSView, &*progress, &*progress_label]),
             mtm,
         );
         apply_row.setSpacing(SPACING / 2.0);
-        let layout = pane(mtm, &[&*hint as &NSView, &*editor, &*apply_row]);
+        let apply_note = wrapping_label(mtm, "");
+        apply_note.setTextColor(Some(&ui_style::secondary_label_color()));
+        apply_note.setHidden(true);
+        let layout = pane(mtm, &[&*hint as &NSView, &*editor, &*apply_row, &*apply_note]);
+        editor
+            .trailingAnchor()
+            .constraintEqualToAnchor_constant(&layout.trailingAnchor(), -CONTENT_INSET)
+            .setActive(true);
 
-        let permissions = [
-            (
-                status_label(mtm),
-                button(mtm, strings::settings_allow(lang), target, sel!(onOpenAccessibility:)),
-            ),
-            (
-                status_label(mtm),
-                button(mtm, strings::settings_allow(lang), target, sel!(onOpenScreenRecording:)),
-            ),
-        ];
-        let titles = [
-            strings::settings_accessibility(lang),
-            strings::settings_screen_recording(lang),
-        ];
-        let title_labels: Vec<_> = titles.iter().map(|title| label(mtm, title)).collect();
-        let permission_rows: Vec<[&NSView; 3]> = permissions
-            .iter()
-            .zip(&title_labels)
-            .map(|((status, button), title)| [&**title as &NSView, &**status, &**button])
-            .collect();
-        let access = pane(mtm, &[&*grid(mtm, &permission_rows)]);
+        let permissions = PermissionRows::new(mtm, target, lang);
+        let access = pane(mtm, &[permissions.view()]);
 
         let content = NSView::new(mtm);
         let sidebar = Sidebar::new(mtm, lang, content.clone(), vec![general, layout, access]);
@@ -148,6 +130,22 @@ impl Settings {
             NSSplitViewItem::sidebarWithViewController(&controller(mtm, &sidebar.table_view(mtm)));
         sidebar_item.setMinimumThickness(SIDEBAR_WIDTH);
         sidebar_item.setMaximumThickness(SIDEBAR_WIDTH);
+        sidebar_item.setCanCollapse(false);
+        let version = label(
+            mtm,
+            &format!(
+                "{} {}",
+                strings::settings_version(lang),
+                env!("CARGO_PKG_VERSION")
+            ),
+        );
+        version.setFont(Some(&ui_style::footer_font()));
+        version.setTextColor(Some(&ui_style::secondary_label_color()));
+        let footer =
+            NSStackView::stackViewWithViews(&NSArray::from_slice(&[&*version as &NSView]), mtm);
+        let footer_controller = NSSplitViewItemAccessoryViewController::new(mtm);
+        footer_controller.setView(&footer);
+        sidebar_item.addBottomAlignedAccessoryViewController(&footer_controller);
         split.addSplitViewItem(&sidebar_item);
         split.addSplitViewItem(&NSSplitViewItem::splitViewItemWithViewController(
             &controller(mtm, &content),
@@ -157,26 +155,20 @@ impl Settings {
         window.setStyleMask(
             NSWindowStyleMask::Titled
                 | NSWindowStyleMask::Closable
+                | NSWindowStyleMask::Resizable
                 | NSWindowStyleMask::FullSizeContentView,
         );
         window.setTitlebarAppearsTransparent(true);
         unsafe { window.setReleasedWhenClosed(false) };
         window.setTitle(&NSString::from_str(strings::settings_title(lang)));
         window.setContentSize(WINDOW_SIZE);
+        window.setContentMinSize(NSSize::new(WINDOW_MIN_WIDTH, WINDOW_SIZE.height));
         window.center();
         sidebar.select(0);
 
-        unsafe {
-            NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
-                target,
-                sel!(onSettingsFocus:),
-                Some(NSWindowDidBecomeKeyNotification),
-                Some(&window),
-            );
-        }
         Self {
             window,
-            _sidebar: sidebar,
+            sidebar,
             editor,
             show_panel,
             login,
@@ -184,12 +176,15 @@ impl Settings {
             apply,
             progress,
             progress_label,
-            lang,
+            apply_note,
         }
     }
 
-    /// «Применяю изменения…»: кнопка недоступна, рядом крутится индикатор.
+    /// «Применяю изменения…»: кнопка недоступна, рядом крутится индикатор, прошлое пояснение убрано.
     pub fn set_applying(&self, applying: bool) {
+        if applying {
+            self.set_apply_note(None);
+        }
         self.apply.setEnabled(!applying);
         self.progress_label.setHidden(!applying);
         unsafe {
@@ -199,6 +194,21 @@ impl Settings {
                 self.progress.stopAnimation(None);
             }
         }
+    }
+
+    /// Пояснение под кнопкой «Применить»; None — убрать.
+    pub fn set_apply_note(&self, note: Option<&str>) {
+        self.apply_note.setStringValue(&NSString::from_str(note.unwrap_or_default()));
+        self.apply_note.setHidden(note.is_none());
+    }
+
+    pub fn window(&self) -> &NSWindow {
+        &self.window
+    }
+
+    /// Окно на экране и в нём открыт раздел «Расположение».
+    pub fn is_layout_shown(&self) -> bool {
+        self.window.isVisible() && self.sidebar.selected() == Some(LAYOUT_PANE)
     }
 
     pub fn show(&self, mtm: MainThreadMarker) {
@@ -211,41 +221,7 @@ impl Settings {
     pub fn refresh(&self) {
         set_switch(&self.show_panel, show_panel());
         set_switch(&self.login, crate::login::is_enabled());
-        let granted = [
-            unsafe { AXIsProcessTrusted() },
-            CGPreflightScreenCaptureAccess(),
-        ];
-        for ((status, button), granted) in self.permissions.iter().zip(granted) {
-            let (text, color) = if granted {
-                (
-                    strings::settings_granted(self.lang),
-                    NSColor::systemGreenColor(),
-                )
-            } else {
-                (
-                    strings::settings_denied(self.lang),
-                    NSColor::systemRedColor(),
-                )
-            };
-            status.setStringValue(&NSString::from_str(text));
-            status.setTextColor(Some(&color));
-            button.setHidden(granted);
-        }
-    }
-}
-
-/// Открывает раздел «Конфиденциальность и безопасность» с нужным разрешением.
-pub fn open_accessibility_pane() {
-    open_url(ACCESSIBILITY_PANE);
-}
-
-pub fn open_screen_recording_pane() {
-    open_url(SCREEN_RECORDING_PANE);
-}
-
-fn open_url(url: &str) {
-    if let Some(url) = NSURL::URLWithString(&NSString::from_str(url)) {
-        NSWorkspace::sharedWorkspace().openURL(&url);
+        self.permissions.refresh();
     }
 }
 
@@ -302,6 +278,14 @@ define_class!(
 );
 
 impl Sidebar {
+    fn titles(lang: Lang) -> [(&'static str, &'static str); 3] {
+        [
+            ("gearshape", strings::settings_general(lang)),
+            ("menubar.rectangle", strings::settings_layout(lang)),
+            ("lock.shield", strings::settings_permissions(lang)),
+        ]
+    }
+
     /// Строка раздела: символ SF и название.
     fn cell(&self, row: usize) -> Option<Retained<NSView>> {
         let mtm = self.mtm();
@@ -345,11 +329,7 @@ impl Sidebar {
         content: Retained<NSView>,
         panes: Vec<Retained<NSView>>,
     ) -> Retained<Self> {
-        let titles = vec![
-            ("gearshape", strings::settings_general(lang)),
-            ("menubar.rectangle", strings::settings_layout(lang)),
-            ("lock.shield", strings::settings_permissions(lang)),
-        ];
+        let titles = Self::titles(lang).into_iter().collect();
         let this = mtm.alloc().set_ivars(SidebarIvars {
             titles,
             content,
@@ -386,6 +366,11 @@ impl Sidebar {
         if let Some(table) = self.ivars().table.borrow().as_ref() {
             table.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row), false);
         }
+    }
+
+    fn selected(&self) -> Option<usize> {
+        let row = self.ivars().table.borrow().as_ref()?.selectedRow();
+        usize::try_from(row).ok()
     }
 
     fn show_pane(&self, row: usize) {
@@ -430,7 +415,8 @@ fn controller(mtm: MainThreadMarker, view: &NSView) -> Retained<NSViewController
     controller
 }
 
-/// Раздел: элементы друг под другом от левого верхнего угла.
+/// Раздел: элементы друг под другом от левого верхнего угла, не шире раздела.
+/// Окно по высоте наименьшее и растёт, только если элементы не влезают.
 fn pane(mtm: MainThreadMarker, views: &[&NSView]) -> Retained<NSView> {
     let pane = NSView::new(mtm);
     let stack = NSStackView::stackViewWithViews(&NSArray::from_slice(views), mtm);
@@ -447,16 +433,18 @@ fn pane(mtm: MainThreadMarker, views: &[&NSView]) -> Retained<NSView> {
         .leadingAnchor()
         .constraintEqualToAnchor_constant(&pane.leadingAnchor(), CONTENT_INSET)
         .setActive(true);
+    stack
+        .trailingAnchor()
+        .constraintEqualToAnchor_constant(&pane.trailingAnchor(), -CONTENT_INSET)
+        .setActive(true);
+    stack
+        .bottomAnchor()
+        .constraintLessThanOrEqualToAnchor_constant(&pane.bottomAnchor(), -CONTENT_INSET)
+        .setActive(true);
+    let fit = pane.heightAnchor().constraintEqualToConstant(WINDOW_SIZE.height);
+    fit.setPriority(FIT_PRIORITY);
+    fit.setActive(true);
     pane
-}
-
-fn grid<const N: usize>(mtm: MainThreadMarker, rows: &[[&NSView; N]]) -> Retained<NSGridView> {
-    let rows: Vec<Retained<NSArray<NSView>>> =
-        rows.iter().map(|row| NSArray::from_slice(row)).collect();
-    let grid = NSGridView::gridViewWithViews(&NSArray::from_retained_slice(&rows), mtm);
-    grid.setRowSpacing(SPACING);
-    grid.setColumnSpacing(SPACING * 2.0);
-    grid
 }
 
 fn switch(mtm: MainThreadMarker, target: &AnyObject, action: Sel) -> Retained<NSSwitch> {
@@ -476,23 +464,3 @@ fn set_switch(switch: &NSSwitch, on: bool) {
     });
 }
 
-fn label(mtm: MainThreadMarker, text: &str) -> Retained<NSTextField> {
-    NSTextField::labelWithString(&NSString::from_str(text), mtm)
-}
-
-fn status_label(mtm: MainThreadMarker) -> Retained<NSTextField> {
-    let status = label(mtm, "");
-    status.setFont(Some(&NSFont::systemFontOfSize(NSFont::systemFontSize())));
-    status
-}
-
-fn button(mtm: MainThreadMarker, title: &str, target: &AnyObject, action: Sel) -> Retained<NSButton> {
-    unsafe {
-        NSButton::buttonWithTitle_target_action(
-            &NSString::from_str(title),
-            Some(target),
-            Some(action),
-            mtm,
-        )
-    }
-}

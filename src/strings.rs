@@ -78,18 +78,47 @@ pub fn settings_granted(lang: Lang) -> &'static str {
     }
 }
 
-pub fn settings_denied(lang: Lang) -> &'static str {
+/// Кнопка перехода в Системные настройки, когда разрешения нет.
+pub fn permission_open_settings(lang: Lang) -> &'static str {
     match lang {
-        Lang::En => "Not allowed",
-        Lang::Ru => "Нет доступа",
+        Lang::En => "Open System Settings",
+        Lang::Ru => "Открыть настройки",
     }
 }
 
-/// Кнопка перехода в Системные настройки, когда разрешения нет.
-pub fn settings_allow(lang: Lang) -> &'static str {
+pub fn permission_screen_recording_detail(lang: Lang) -> &'static str {
     match lang {
-        Lang::En => "Allow…",
-        Lang::Ru => "Разрешить…",
+        Lang::En => "Shows hidden icons in the panel. Only the menu bar is captured.",
+        Lang::Ru => "Показывает спрятанные иконки в панели. Снимается только строка меню.",
+    }
+}
+
+pub fn permission_accessibility_detail(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Opens icon menus when you click them in the panel.",
+        Lang::Ru => "Открывает меню иконок по клику в панели.",
+    }
+}
+
+/// Окно разрешений при запуске.
+pub fn onboarding_title(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Nook needs two permissions",
+        Lang::Ru => "Nook нужны два разрешения",
+    }
+}
+
+pub fn onboarding_text(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Hiding icons works without them, but the panel can't show or click hidden icons.",
+        Lang::Ru => "Без них скрытие иконок работает, но панель не сможет показывать и нажимать спрятанные иконки.",
+    }
+}
+
+pub fn onboarding_done(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Done",
+        Lang::Ru => "Готово",
     }
 }
 
@@ -110,8 +139,8 @@ pub fn settings_layout(lang: Lang) -> &'static str {
 
 pub fn settings_show_panel(lang: Lang) -> &'static str {
     match lang {
-        Lang::En => "Show panel",
-        Lang::Ru => "Показывать панель",
+        Lang::En => "Show extra panel below the menu bar",
+        Lang::Ru => "Показывать дополнительную панель под строкой меню",
     }
 }
 
@@ -144,6 +173,20 @@ pub fn editor_applying(lang: Lang) -> &'static str {
     }
 }
 
+pub fn editor_cramped(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Not everything moved: there isn't enough room next to the notch. Move a few icons from the main row to the panel and apply again.",
+        Lang::Ru => "Не всё встало на место: у чёлки не хватает места. Уберите часть иконок из основного ряда в панель и примените ещё раз.",
+    }
+}
+
+pub fn editor_not_landed(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Not everything moved — the rows show what actually happened.",
+        Lang::Ru => "Не всё встало на место — в рядах показано, как вышло.",
+    }
+}
+
 pub fn editor_hint(lang: Lang) -> &'static str {
     match lang {
         Lang::En => "Drag icons between rows.",
@@ -163,6 +206,34 @@ pub fn menu_quit(lang: Lang) -> &'static str {
     match lang {
         Lang::En => "Quit",
         Lang::Ru => "Выход",
+    }
+}
+
+pub fn menu_hide_app(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Hide Nook",
+        Lang::Ru => "Скрыть Nook",
+    }
+}
+
+pub fn menu_quit_app(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Quit Nook",
+        Lang::Ru => "Завершить Nook",
+    }
+}
+
+pub fn menu_file(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "File",
+        Lang::Ru => "Файл",
+    }
+}
+
+pub fn menu_close_window(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Close Window",
+        Lang::Ru => "Закрыть окно",
     }
 }
 

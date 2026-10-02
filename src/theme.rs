@@ -67,7 +67,9 @@ pub fn observe(target: &AnyObject) {
 
 /// Снимок, подогнанный под тему: иконка не того тона инвертируется, цветная остаётся.
 pub fn fit(image: &NSImage, theme: Theme) -> Retained<NSImage> {
-    let Some(mut pixels) = Pixels::read(image) else { return image.retain() };
+    let Some(mut pixels) = Pixels::read(image) else {
+        return image.retain();
+    };
     let wanted_dark = theme == Theme::Light;
     let needs_flip = match pixels.tone() {
         Some(tone) if tone < DARK_TONE => !wanted_dark,
@@ -78,7 +80,9 @@ pub fn fit(image: &NSImage, theme: Theme) -> Retained<NSImage> {
         return image.retain();
     }
     pixels.invert();
-    pixels.to_image(image.size()).unwrap_or_else(|| image.retain())
+    pixels
+        .to_image(image.size())
+        .unwrap_or_else(|| image.retain())
 }
 
 /// Пиксели снимка в RGBA с умноженной альфой.
@@ -90,11 +94,20 @@ struct Pixels {
 
 impl Pixels {
     fn read(image: &NSImage) -> Option<Self> {
-        let cg = unsafe { image.CGImageForProposedRect_context_hints(std::ptr::null_mut(), None, None) }?;
+        let cg = unsafe {
+            image.CGImageForProposedRect_context_hints(std::ptr::null_mut(), None, None)
+        }?;
         let (width, height) = (CGImage::width(Some(&cg)), CGImage::height(Some(&cg)));
-        let mut pixels = Self { data: vec![0; width * height * 4], width, height };
+        let mut pixels = Self {
+            data: vec![0; width * height * 4],
+            width,
+            height,
+        };
         let context = pixels.context()?;
-        let rect = CGRect::new(Default::default(), objc2_core_foundation::CGSize::new(width as f64, height as f64));
+        let rect = CGRect::new(
+            Default::default(),
+            objc2_core_foundation::CGSize::new(width as f64, height as f64),
+        );
         CGContext::draw_image(Some(&context), rect, Some(&cg));
         Some(pixels)
     }
@@ -123,7 +136,11 @@ impl Pixels {
                 continue;
             }
             let channel = |value: u8| f64::from(value) / f64::from(alpha);
-            sum += LUMA_WEIGHTS.iter().zip(pixel).map(|(weight, &value)| weight * channel(value)).sum::<f64>();
+            sum += LUMA_WEIGHTS
+                .iter()
+                .zip(pixel)
+                .map(|(weight, &value)| weight * channel(value))
+                .sum::<f64>();
             count += 1;
         }
         (count > 0).then(|| sum / count as f64)

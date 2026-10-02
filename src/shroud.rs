@@ -46,12 +46,18 @@ impl Shroud {
     /// угла основного экрана, как у окон иконок.
     pub fn show(&self, mtm: MainThreadMarker, image: &CGImage, rect: CGRect) {
         // Начало координат Cocoa — низ основного экрана (первого в списке), а не экрана с активным окном.
-        let Some(primary) = NSScreen::screens(mtm).firstObject() else { return };
+        let Some(primary) = NSScreen::screens(mtm).firstObject() else {
+            return;
+        };
         let top = primary.frame().origin.y + primary.frame().size.height;
         let size = NSSize::new(rect.size.width, rect.size.height);
-        let frame = NSRect::new(NSPoint::new(rect.origin.x, top - rect.origin.y - rect.size.height), size);
+        let frame = NSRect::new(
+            NSPoint::new(rect.origin.x, top - rect.origin.y - rect.size.height),
+            size,
+        );
         let picture = NSImage::initWithCGImage_size(NSImage::alloc(), image, size);
-        self.window.setContentView(Some(&NSImageView::imageViewWithImage(&picture, mtm)));
+        self.window
+            .setContentView(Some(&NSImageView::imageViewWithImage(&picture, mtm)));
         self.window.setFrame_display(frame, true);
         self.window.orderFrontRegardless();
     }

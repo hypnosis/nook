@@ -26,6 +26,7 @@ objc2-app-kit = { version = "0.3.2", features = [
     "NSScrollView",
     "NSSplitViewController",
     "NSSplitViewItem",
+    "NSSplitViewItemAccessoryViewController",
     "NSStackView",
     "NSSwitch",
     "NSTableCellView",

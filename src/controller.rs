@@ -20,9 +20,10 @@ use objc2::MainThreadMarker;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly, Message};
 use objc2::sel;
 use objc2_app_kit::{
-    NSApplication, NSApplicationDelegate, NSButton, NSControlStateValueOn, NSEventType, NSImage,
-    NSScreen, NSStatusItem, NSSwitch, NSWindowDidMoveNotification, NSWorkspace,
-    NSWorkspaceActiveSpaceDidChangeNotification,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSButton,
+    NSControlStateValueOn, NSEventType, NSImage, NSScreen, NSStatusItem, NSSwitch, NSWindow,
+    NSWindowDidBecomeKeyNotification, NSWindowDidMoveNotification, NSWindowWillCloseNotification,
+    NSWorkspace, NSWorkspaceActiveSpaceDidChangeNotification,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
@@ -30,6 +31,8 @@ use objc2_foundation::{
 };
 
 use crate::auto_collapse::{self, MouseMonitor};
+use crate::layout::Layout;
+use crate::onboarding::Onboarding;
 use crate::panel::Panel;
 use crate::settings::Settings;
 use crate::status_bar::{
@@ -71,10 +74,10 @@ const APPLY_SETTLE_DELAY: f64 = 0.4;
 const APPLY_FIRST_CHECK: f64 = 0.05;
 const APPLY_WAIT_INTERVAL: f64 = 0.05;
 const APPLY_MAX_WAITS: u32 = 30;
-/// Окно узкого разделителя не шире этого — значит, он уже сужен и нарисован.
-const DIVIDER_NARROW_WINDOW: f64 = 40.0;
-/// Дольше перенос идти не может — мышь возвращается в любом случае.
+/// Перенос без единого шага дольше этого считается зависшим — мышь возвращается.
 const APPLY_WATCHDOG: f64 = 5.0;
+/// Как часто сторож проверяет, идёт ли перенос.
+const APPLY_WATCHDOG_POLL: f64 = 1.0;
 
 /// Как часто обновлять клоны, пока панель открыта.
 // HARDCODE: период обновления клонов; вынести в конфиг позже.
@@ -106,18 +109,20 @@ pub struct ControllerIvars {
     /// Таймер обновления клонов: живёт только пока панель открыта.
     panel_refresh_timer: RefCell<Option<Retained<NSTimer>>>,
     settings: RefCell<Option<Settings>>,
+    /// Таймер обновления снимков редактора: живёт, пока открыт раздел «Расположение».
+    editor_refresh_timer: RefCell<Option<Retained<NSTimer>>>,
+    /// Окно разрешений: создаётся при запуске, если какого-то разрешения нет.
+    onboarding: RefCell<Option<Onboarding>>,
     /// Разделитель панели: есть, пока в панели есть иконки.
     divider: RefCell<Option<Retained<NSStatusItem>>>,
-    /// Идёт перестановка иконок — автосворачивание ждёт.
-    applying: Cell<bool>,
+    /// Порядок иконок: из него строятся панель и редактор.
+    layout: RefCell<Layout>,
     /// Сколько раз уже ждали, пока разделитель разложится.
     apply_waits: Cell<u32>,
     /// Номер окна разделителя у WindowServer.
     divider_window: Cell<Option<u32>>,
     /// Мышь отвязана от курсора на время переноса.
     mouse_taken: Cell<bool>,
-    /// Окна иконок панели из последнего снимка в обычном режиме.
-    panel_ids: RefCell<Vec<u32>>,
 }
 
 define_class!(
@@ -174,6 +179,9 @@ define_class!(
                     true,
                 );
             }
+            let main_menu = unsafe { crate::menu::main_menu(mtm, target, self.ivars().lang) };
+            NSApplication::sharedApplication(mtm).setMainMenu(Some(&main_menu));
+            self.show_onboarding_if_needed();
         }
     }
 
@@ -207,19 +215,48 @@ define_class!(
         /// Пункт меню «Настройки…» — открывает окно настроек.
         #[unsafe(method(onOpenSettings:))]
         fn on_open_settings(&self, _sender: *mut AnyObject) {
-            let target: &AnyObject = self.as_ref();
-            self.ivars()
-                .settings
-                .borrow_mut()
-                .get_or_insert_with(|| Settings::new(self.mtm(), target, self.ivars().lang))
-                .show(self.mtm());
+            if self.ivars().settings.borrow().is_none() {
+                let target: &AnyObject = self.as_ref();
+                let settings = Settings::new(self.mtm(), target, self.ivars().lang);
+                self.observe_window(settings.window());
+                *self.ivars().settings.borrow_mut() = Some(settings);
+            }
+            self.set_in_dock(true);
+            // Показ делает окно ключевым, и onWindowFocus: читает настройки внутри этого вызова.
+            if let Some(settings) = self.ivars().settings.borrow().as_ref() {
+                settings.show(self.mtm());
+            }
+            // Окно открыли снова на разделе «Расположение» — выбор раздела не меняется.
+            if self.layout_shown() {
+                let _: () = unsafe { msg_send![self, onEditorNeedsIcons] };
+            }
         }
 
-        /// Окно настроек стало активным — перечитываем статус разрешений и переключателей.
-        #[unsafe(method(onSettingsFocus:))]
-        fn on_settings_focus(&self, _notification: &NSNotification) {
+        /// Окно настроек или разрешений закрывается: других открытых нет — Nook уходит из Dock.
+        #[unsafe(method(onWindowClose:))]
+        fn on_window_close(&self, notification: &NSNotification) {
+            let closing = notification.object();
+            let is_other_open = |window: &NSWindow| {
+                window.isVisible()
+                    && closing
+                        .as_deref()
+                        .is_none_or(|closing| !std::ptr::eq(closing, window.as_ref()))
+            };
+            let settings_open = self.ivars().settings.borrow().as_ref().is_some_and(|settings| is_other_open(settings.window()));
+            let onboarding_open = self.ivars().onboarding.borrow().as_ref().is_some_and(|onboarding| is_other_open(onboarding.window()));
+            if !settings_open && !onboarding_open {
+                self.set_in_dock(false);
+            }
+        }
+
+        /// Окно настроек или разрешений стало активным — перечитываем разрешения и переключатели.
+        #[unsafe(method(onWindowFocus:))]
+        fn on_window_focus(&self, _notification: &NSNotification) {
             if let Some(settings) = self.ivars().settings.borrow().as_ref() {
                 settings.refresh();
+            }
+            if let Some(onboarding) = self.ivars().onboarding.borrow().as_ref() {
+                onboarding.refresh();
             }
         }
 
@@ -233,7 +270,8 @@ define_class!(
             }
         }
 
-        /// Открыт раздел «Расположение»: раскрываем строку и снимаем иконки левее ≡◂.
+        /// Открыт раздел «Расположение»: раскрываем строку, снимаем иконки левее ≡◂
+        /// и обновляем снимки, пока раздел открыт.
         /// Взведённый таймер сворачивания гасим, иначе он спрячет иконки посреди снимка.
         #[unsafe(method(onEditorNeedsIcons))]
         fn on_editor_needs_icons(&self) {
@@ -251,34 +289,62 @@ define_class!(
                     false,
                 );
             }
-        }
-
-        #[unsafe(method(onEditorCapture:))]
-        fn on_editor_capture(&self, _timer: *mut AnyObject) {
-            let spacer_x = {
-                let items_ref = self.ivars().items.borrow();
-                let Some(items) = items_ref.as_ref() else { return };
-                status_bar::item_origin_x(&items.spacer, self.mtm())
-            };
-            if let Some(spacer_x) = spacer_x {
-                crate::capture::capture_left_of(spacer_x, self.ivars().divider_window.get());
+            let mut refresh = self.ivars().editor_refresh_timer.borrow_mut();
+            if refresh.is_none() {
+                *refresh = Some(unsafe {
+                    NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                        PANEL_REFRESH_INTERVAL,
+                        target,
+                        sel!(onEditorRefresh:),
+                        None,
+                        true,
+                    )
+                });
             }
         }
 
-        /// Снимки иконок для редактора готовы: левее разделителя — панель, правее — основной ряд.
+        /// Раздел «Расположение» закрыт — таймер останавливается. Во время перетаскивания,
+        /// «Применить» и при спрятанных иконках снимок пропускается.
+        #[unsafe(method(onEditorRefresh:))]
+        fn on_editor_refresh(&self, _timer: *mut AnyObject) {
+            let (shown, dragging) = match self.ivars().settings.borrow().as_ref() {
+                Some(settings) => (settings.is_layout_shown(), settings.editor.is_dragging()),
+                None => (false, false),
+            };
+            if !shown {
+                if let Some(timer) = self.ivars().editor_refresh_timer.borrow_mut().take() {
+                    timer.invalidate();
+                }
+                return;
+            }
+            if dragging || self.is_applying() || self.ivars().hidden.get() {
+                return;
+            }
+            self.refresh_layout();
+            let _: () = unsafe { msg_send![self, onEditorCapture: std::ptr::null_mut::<AnyObject>()] };
+        }
+
+        /// Снимает картинки иконок из порядка для редактора.
+        #[unsafe(method(onEditorCapture:))]
+        fn on_editor_capture(&self, _timer: *mut AnyObject) {
+            let ids: Vec<u32> = {
+                let layout = self.ivars().layout.borrow();
+                layout.panel().iter().chain(layout.main()).copied().collect()
+            };
+            crate::capture::capture_for_editor(&ids);
+        }
+
+        /// Картинки для редактора готовы — он выстраивает их по порядку.
+        /// Пока иконку тянут или порядок применяется, редактор не трогаем.
         #[unsafe(method(setEditorIcons:ids:))]
         fn set_editor_icons(&self, images: &NSArray<NSImage>, ids: &NSArray<NSNumber>) {
-            let ids_vec: Vec<u32> = ids.iter().map(|id| id.unsignedIntValue()).collect();
-            let panel_ids: Vec<u32> = match self.divider_window_x() {
-                Some(divider_x) => crate::capture::window_centers(&ids_vec)
-                    .into_iter()
-                    .filter(|(_, center)| *center < divider_x)
-                    .map(|(id, _)| id)
-                    .collect(),
-                None => Vec::new(),
-            };
+            let dragging = self.ivars().settings.borrow().as_ref().is_some_and(|settings| settings.editor.is_dragging());
+            if dragging || self.is_applying() {
+                return;
+            }
+            let layout = self.ivars().layout.borrow();
             if let Some(settings) = self.ivars().settings.borrow().as_ref() {
-                settings.editor.set_icons(images, ids, &panel_ids);
+                settings.editor.set_icons(images, ids, layout.panel(), layout.main());
             }
         }
 
@@ -286,10 +352,10 @@ define_class!(
         /// переставляем настоящие иконки.
         #[unsafe(method(onApplyLayout:))]
         fn on_apply_layout(&self, _sender: *mut AnyObject) {
-            if self.ivars().applying.get() {
+            if self.is_applying() {
                 return;
             }
-            self.set_applying(true);
+            self.begin_apply();
             crate::reveal::exit(None);
             self.ivars().apply_waits.set(0);
             if self.ivars().hidden.get() {
@@ -324,14 +390,15 @@ define_class!(
             let divider_id = self.find_divider_window(&known).filter(|&id| {
                 crate::capture::icon_layout()
                     .iter()
-                    .any(|window| window.id == id && window.onscreen && window.width <= DIVIDER_NARROW_WINDOW)
+                    .any(|window| window.id == id && crate::divider::is_narrow(window))
             });
             let Some(divider_id) = divider_id else {
                 let waits = self.ivars().apply_waits.get() + 1;
                 self.ivars().apply_waits.set(waits);
                 if waits > APPLY_MAX_WAITS {
                     crate::log::append("применить: разделитель не встал на место — отмена");
-                    self.set_applying(false);
+                    self.finish_apply();
+                    self.settle_divider(!crate::divider::is_enabled());
                     return;
                 }
                 let target: &AnyObject = self.as_ref();
@@ -350,11 +417,11 @@ define_class!(
                 panel_ids.iter().copied().chain([divider_id]).chain(main_ids.iter().copied()).collect();
             self.ivars().mouse_taken.set(true);
             crate::mover::take_mouse();
-            crate::mover::arrange(order);
+            crate::mover::arrange(order, divider_id);
             let target: &AnyObject = self.as_ref();
             unsafe {
                 NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-                    APPLY_WATCHDOG,
+                    APPLY_WATCHDOG_POLL,
                     target,
                     sel!(onApplyWatchdog:),
                     None,
@@ -363,46 +430,57 @@ define_class!(
             }
         }
 
-        /// Перестановка не закончилась вовремя — возвращаем мышь, чтобы она не осталась отвязанной.
+        /// Пока перенос делает шаги, мышь остаётся отвязанной. Завис — возвращаем её,
+        /// чтобы она не осталась отвязанной навсегда.
         #[unsafe(method(onApplyWatchdog:))]
         fn on_apply_watchdog(&self, _timer: *mut AnyObject) {
-            if self.ivars().mouse_taken.get() {
+            if !self.ivars().mouse_taken.get() {
+                return;
+            }
+            if crate::mover::is_stalled(Duration::from_secs_f64(APPLY_WATCHDOG)) {
                 crate::log::append("применить: перенос завис — возвращаю мышь");
                 self.give_back_mouse();
-                self.set_applying(false);
+                self.finish_apply();
+                return;
             }
-        }
-
-        /// Перестановка закончена: прячем панель разделителем или убираем его, если панель пуста.
-        #[unsafe(method(onLayoutApplied))]
-        fn on_layout_applied(&self) {
-            self.give_back_mouse();
-            self.set_applying(false);
-            let panel_empty = self
-                .ivars()
-                .settings
-                .borrow()
-                .as_ref()
-                .is_none_or(|settings| settings.editor.order().0.is_empty());
-            if panel_empty {
-                if let Some(divider) = self.ivars().divider.borrow_mut().take() {
-                    crate::divider::remove(&divider);
-                }
-                self.ivars().divider_window.set(None);
-            } else {
-                self.widen_divider();
-            }
-            crate::divider::set_enabled(!panel_empty);
             let target: &AnyObject = self.as_ref();
             unsafe {
                 NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-                    PANEL_CAPTURE_DELAY,
+                    APPLY_WATCHDOG_POLL,
                     target,
-                    sel!(onEditorCapture:),
+                    sel!(onApplyWatchdog:),
                     None,
                     false,
                 );
             }
+        }
+
+        /// Перестановка закончена. Пока разделитель узкий, видно, остались ли иконки панели:
+        /// пустой панели разделитель не нужен, иначе он снова широкий и прячет её.
+        /// `cramped` — иконку, которую надо было сдвинуть, спрятала чёлка.
+        #[unsafe(method(onLayoutApplied:))]
+        fn on_layout_applied(&self, cramped: bool) {
+            self.give_back_mouse();
+            let panel_empty = !self.ivars().divider_window.get().is_some_and(crate::divider::has_icons_left);
+            self.settle_divider(panel_empty);
+            crate::divider::set_enabled(!panel_empty);
+            self.finish_apply_when_settled(cramped);
+        }
+
+        /// Строка встала после переноса: порядок — то, что в ней теперь стоит. Не всё
+        /// встало как в редакторе — пояснение под кнопкой. Редактор показывает итог.
+        #[unsafe(method(onApplySettled:))]
+        fn on_apply_settled(&self, cramped: bool) {
+            let refreshed = self.finish_apply();
+            if let Some(settings) = self.ivars().settings.borrow().as_ref() {
+                let (panel, main) = settings.editor.order();
+                let landed = !refreshed || self.ivars().layout.borrow().matches(&panel, &main);
+                let lang = self.ivars().lang;
+                let note = if cramped { strings::editor_cramped(lang) } else { strings::editor_not_landed(lang) };
+                settings.set_apply_note((!landed).then_some(note));
+                settings.editor.mark_applied();
+            }
+            let _: () = unsafe { msg_send![self, onEditorCapture: std::ptr::null_mut::<AnyObject>()] };
         }
 
         /// Стартовый разделитель встал на своё место — включаем его и снимаем иконки.
@@ -430,12 +508,12 @@ define_class!(
 
         #[unsafe(method(onOpenAccessibility:))]
         fn on_open_accessibility(&self, _sender: *mut AnyObject) {
-            crate::settings::open_accessibility_pane();
+            crate::permissions::open_accessibility_pane();
         }
 
         #[unsafe(method(onOpenScreenRecording:))]
         fn on_open_screen_recording(&self, _sender: *mut AnyObject) {
-            crate::settings::open_screen_recording_pane();
+            crate::permissions::open_screen_recording_pane();
         }
 
         /// Пункт меню «Выход» — завершаем приложение.
@@ -521,37 +599,38 @@ define_class!(
         }
 
         /// Движение мыши (от монитора). Работает только когда иконки показаны.
-        /// Мышь в полосе menu bar → гасим таймер коллапса. Мышь ушла → взводим.
+        /// Мышь в полосе menu bar или открыт раздел «Расположение» → гасим таймер коллапса.
+        /// Мышь ушла → взводим.
         #[unsafe(method(onMouseMoved))]
         fn on_mouse_moved(&self) {
             if self.ivars().hidden.get() {
                 return; // показывать нечего — следить незачем
             }
-            if auto_collapse::mouse_in_menu_bar_strip(self.mtm()) || self.mouse_in_panel() {
+            if auto_collapse::mouse_in_menu_bar_strip(self.mtm())
+                || self.mouse_in_panel()
+                || self.layout_shown()
+            {
                 self.cancel_collapse_timer();
             } else if self.ivars().collapse_timer.borrow().is_none() {
                 self.arm_collapse_timer();
             }
         }
 
-        /// Окна иконок встали после раскрытия — снимаем те, что ушли под чёлку.
+        /// Окна иконок встали после раскрытия — снимаем иконки панели по порядку.
         #[unsafe(method(onPanelCapture:))]
         fn on_panel_capture(&self, _timer: *mut AnyObject) {
-            if self.ivars().hidden.get() {
+            if self.ivars().hidden.get() || crate::reveal::menu_open() {
                 return;
             }
-            if crate::reveal::is_on() {
-                if !crate::reveal::menu_open() {
-                    crate::capture::capture_ids(&self.ivars().panel_ids.borrow());
-                }
-                return;
+            self.refresh_layout();
+            let panel = self.ivars().layout.borrow().panel().to_vec();
+            crate::capture::capture_for_panel(&panel);
+            if !crate::reveal::is_on() {
+                self.enter_narrow_mode();
             }
-            let ids = crate::capture::capture_under_notch(self.ivars().divider_window.get());
-            *self.ivars().panel_ids.borrow_mut() = ids;
-            self.enter_narrow_mode();
         }
 
-        /// Снимки иконок под чёлкой готовы.
+        /// Снимки иконок панели готовы.
         #[unsafe(method(setPanelIcons:ids:))]
         fn set_panel_icons(&self, images: &NSArray<NSImage>, ids: &NSArray<NSNumber>) {
             let target: &AnyObject = self.as_ref();
@@ -632,7 +711,7 @@ define_class!(
         #[unsafe(method(onAutoCollapse:))]
         fn on_auto_collapse(&self, _timer: *mut AnyObject) {
             self.ivars().collapse_timer.borrow_mut().take();
-            if self.ivars().hidden.get() || self.ivars().applying.get() || crate::reveal::menu_open() {
+            if self.ivars().hidden.get() || self.is_applying() || crate::reveal::menu_open() {
                 return;
             }
             self.toggle();
@@ -656,14 +735,59 @@ impl Controller {
             panel: RefCell::new(None),
             panel_refresh_timer: RefCell::new(None),
             settings: RefCell::new(None),
+            editor_refresh_timer: RefCell::new(None),
+            onboarding: RefCell::new(None),
             divider: RefCell::new(None),
-            applying: Cell::new(false),
+            layout: RefCell::new(Layout::default()),
             apply_waits: Cell::new(0),
             divider_window: Cell::new(None),
             mouse_taken: Cell::new(false),
-            panel_ids: RefCell::new(Vec::new()),
         });
         unsafe { msg_send![super(this), init] }
+    }
+
+    /// Показывает окно разрешений, если какого-то разрешения нет.
+    fn show_onboarding_if_needed(&self) {
+        if crate::permissions::all_granted() {
+            return;
+        }
+        let target: &AnyObject = self.as_ref();
+        let onboarding = Onboarding::new(self.mtm(), target, self.ivars().lang);
+        self.observe_window(onboarding.window());
+        self.set_in_dock(true);
+        onboarding.show(self.mtm());
+        *self.ivars().onboarding.borrow_mut() = Some(onboarding);
+    }
+
+    /// Окно настроек или разрешений сообщает контроллеру, что стало активным и что закрывается.
+    fn observe_window(&self, window: &NSWindow) {
+        let target: &AnyObject = self.as_ref();
+        let center = NSNotificationCenter::defaultCenter();
+        unsafe {
+            center.addObserver_selector_name_object(
+                target,
+                sel!(onWindowFocus:),
+                Some(NSWindowDidBecomeKeyNotification),
+                Some(window),
+            );
+            center.addObserver_selector_name_object(
+                target,
+                sel!(onWindowClose:),
+                Some(NSWindowWillCloseNotification),
+                Some(window),
+            );
+        }
+    }
+
+    /// Пока открыто окно настроек или разрешений, Nook — обычное приложение:
+    /// иконка в Dock, Cmd+Tab и своё меню. Иначе живёт только в строке меню.
+    fn set_in_dock(&self, on: bool) {
+        let policy = if on {
+            NSApplicationActivationPolicy::Regular
+        } else {
+            NSApplicationActivationPolicy::Accessory
+        };
+        NSApplication::sharedApplication(self.mtm()).setActivationPolicy(policy);
     }
 
     /// Переключает видимость зоны слева от якоря — с проверкой порядка.
@@ -690,7 +814,7 @@ impl Controller {
         };
 
         if going_to_hide {
-            crate::reveal::exit_now(self.mtm());
+            crate::reveal::exit_now(self.mtm(), self.ivars().divider_window.get());
         }
         items.spacer.setLength(spacer_width);
         status_bar::set_anchor_symbol(items, self.mtm(), anchor_symbol);
@@ -741,8 +865,38 @@ impl Controller {
         }
     }
 
+    /// Перечитывает порядок иконок, если строку меню сейчас можно прочитать честно:
+    /// она раскрыта, не перестраивается под узкий режим, а окно разделителя известно.
+    fn refresh_layout(&self) -> bool {
+        if self.ivars().hidden.get() || crate::reveal::is_entering() {
+            return false;
+        }
+        let divider = match self.ivars().divider.borrow().as_ref() {
+            Some(_) => match self.ivars().divider_window.get() {
+                Some(id) => Some(id),
+                None => return false,
+            },
+            None => None,
+        };
+        let spacer_x = {
+            let items = self.ivars().items.borrow();
+            let Some(items) = items.as_ref() else { return false };
+            status_bar::item_origin_x(&items.spacer, self.mtm())
+        };
+        let Some(spacer_x) = spacer_x else { return false };
+        self.ivars().layout.borrow_mut().refresh(divider, spacer_x)
+    }
+
+    fn is_applying(&self) -> bool {
+        self.ivars().layout.borrow().is_applying()
+    }
+
     fn mouse_in_panel(&self) -> bool {
         self.ivars().panel.borrow().as_ref().is_some_and(Panel::contains_mouse)
+    }
+
+    fn layout_shown(&self) -> bool {
+        self.ivars().settings.borrow().as_ref().is_some_and(Settings::is_layout_shown)
     }
 
     /// Останавливает таймер проверки размещения (по сырому указателю из колбэка).
@@ -804,11 +958,13 @@ impl Controller {
         }
     }
 
-    /// Пока строка раскрыта: снимок иконок под чёлкой и поиск их кнопок, потом авто-скрытие.
+    /// Пока строка раскрыта: снимок иконок панели и поиск их кнопок, потом авто-скрытие.
     fn start_startup_snapshot(&self) {
         self.ivars().startup_steps_pending.set(2);
-        let ids = crate::capture::capture_under_notch(self.ivars().divider_window.get());
-        crate::click::remember_owners(ids, true);
+        self.refresh_layout();
+        let panel = self.ivars().layout.borrow().panel().to_vec();
+        crate::capture::capture_for_panel(&panel);
+        crate::click::remember_owners(panel, true);
     }
 
     /// Возвращает мышь, если она забрана; повторный вызов ничего не делает.
@@ -818,12 +974,44 @@ impl Controller {
         }
     }
 
-    /// Идёт ли применение раскладки: флаг, индикатор в настройках.
-    fn set_applying(&self, applying: bool) {
-        self.ivars().applying.set(applying);
+    /// Начало «Применить»: порядок замирает, кнопка в настройках ждёт.
+    fn begin_apply(&self) {
+        self.ivars().layout.borrow_mut().begin_apply();
         if let Some(settings) = self.ivars().settings.borrow().as_ref() {
-            settings.set_applying(applying);
+            settings.set_applying(true);
         }
+    }
+
+    /// Конец «Применить»: порядок — то, что теперь стоит в строке меню. Возвращает, прочитан ли он.
+    fn finish_apply(&self) -> bool {
+        self.ivars().layout.borrow_mut().end_apply();
+        if let Some(settings) = self.ivars().settings.borrow().as_ref() {
+            settings.set_applying(false);
+        }
+        let refreshed = self.refresh_layout();
+        if !refreshed {
+            crate::log::append("порядок: после переноса строку не прочитать — остаётся прежний");
+        }
+        refreshed
+    }
+
+    /// После переноса ждёт, пока разделитель снова широкий (или убран) и строка встала,
+    /// и зовёт `onApplySettled:`.
+    fn finish_apply_when_settled(&self, cramped: bool) {
+        let divider_id = self.ivars().divider_window.get();
+        thread::spawn(move || {
+            if let Some(divider_id) = divider_id {
+                crate::reveal::wait_divider(divider_id, false);
+            }
+            crate::mover::wait_until_still();
+            DispatchQueue::main().exec_async(move || {
+                let mtm = MainThreadMarker::new().expect("main queue");
+                if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
+                    let delegate: &AnyObject = delegate.as_ref();
+                    let _: () = unsafe { msg_send![delegate, onApplySettled: cramped] };
+                }
+            });
+        });
     }
 
     /// Окно разделителя панели среди окон строки меню. Уже известное берём по номеру;
@@ -847,10 +1035,16 @@ impl Controller {
         Some(id)
     }
 
-    /// Левый край окна разделителя панели по данным WindowServer.
-    fn divider_window_x(&self) -> Option<f64> {
-        let id = self.ivars().divider_window.get()?;
-        crate::capture::icon_layout().into_iter().find(|window| window.id == id).map(|window| window.x)
+    /// После переноса: пустой панели разделитель не нужен, иначе он снова широкий и прячет её.
+    fn settle_divider(&self, panel_empty: bool) {
+        if panel_empty {
+            if let Some(divider) = self.ivars().divider.borrow_mut().take() {
+                crate::divider::remove(&divider);
+            }
+            self.ivars().divider_window.set(None);
+        } else {
+            self.widen_divider();
+        }
     }
 
     /// Ставит разделителю ширину, при которой иконки панели уходят внутрь экрана.
@@ -877,7 +1071,7 @@ impl Controller {
     /// Включает узкий режим панели, если панель открыта, в ней есть иконки и у чёлки есть место.
     fn enter_narrow_mode(&self) {
         let panel_visible = self.ivars().panel.borrow().as_ref().is_some_and(Panel::is_visible);
-        if !panel_visible || self.ivars().applying.get() || self.ivars().panel_ids.borrow().is_empty() {
+        if !panel_visible || self.is_applying() || self.ivars().layout.borrow().panel().is_empty() {
             return;
         }
         let wide = self.ivars().divider.borrow().as_ref().map(|divider| divider.length());

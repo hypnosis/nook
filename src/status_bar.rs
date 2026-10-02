@@ -24,9 +24,7 @@
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{sel, AnyThread, MainThreadMarker};
-use objc2_app_kit::{
-    NSEventMask, NSImage, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
-};
+use objc2_app_kit::{NSEventMask, NSImage, NSStatusBar, NSStatusItem, NSVariableStatusItemLength};
 use objc2_foundation::{NSData, NSSize, NSString};
 
 use crate::strings::{self, Lang};
@@ -50,7 +48,6 @@ pub const ANCHOR_SYMBOL_SHOWN: &str = "chevron.left";
 pub const ANCHOR_SYMBOL_HIDDEN: &str = "chevron.down";
 /// SF Symbol якоря: guard заблокировал скрытие — треугольник предупреждения.
 pub const ANCHOR_SYMBOL_BLOCKED: &str = "exclamationmark.triangle";
-
 
 /// Пара айтемов. Контроллер держит оба `Retained`, пока жив.
 pub struct StatusItems {
@@ -76,7 +73,11 @@ pub unsafe fn create(mtm: MainThreadMarker, target: &AnyObject, lang: Lang) -> S
 }
 
 /// Создаёт спейсер (fixed width, символ cutter). Вынесено для переиспользования.
-unsafe fn make_spacer(bar: &NSStatusBar, mtm: MainThreadMarker, lang: Lang) -> Retained<NSStatusItem> {
+unsafe fn make_spacer(
+    bar: &NSStatusBar,
+    mtm: MainThreadMarker,
+    lang: Lang,
+) -> Retained<NSStatusItem> {
     let spacer = bar.statusItemWithLength(SPACER_WIDTH_SHOWN);
     spacer.setAutosaveName(Some(&NSString::from_str(SPACER_AUTOSAVE)));
     if let Some(button) = spacer.button(mtm) {
@@ -190,10 +191,7 @@ fn set_button_blocked_icon(button: &objc2_app_kit::NSStatusBarButton) -> bool {
     // SAFETY: BLOCKED_ICON_PNG живёт всю программу (static); dataWithBytes_length
     // копирует байты внутрь NSData, так что переживать за время жизни не нужно.
     let data = unsafe {
-        NSData::dataWithBytes_length(
-            BLOCKED_ICON_PNG.as_ptr() as *mut _,
-            BLOCKED_ICON_PNG.len(),
-        )
+        NSData::dataWithBytes_length(BLOCKED_ICON_PNG.as_ptr() as *mut _, BLOCKED_ICON_PNG.len())
     };
     match NSImage::initWithData(NSImage::alloc(), &data) {
         Some(image) => {

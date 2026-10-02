@@ -66,6 +66,11 @@ pub fn is_on() -> bool {
     MODE.with_borrow(|mode| mode.stage != Stage::Off)
 }
 
+/// Узкий режим включается: строка меню ещё перестраивается.
+pub fn is_entering() -> bool {
+    MODE.with_borrow(|mode| mode.stage == Stage::Entering)
+}
+
 /// Идёт нажатие из панели: меню иконки открыто.
 pub fn menu_open() -> bool {
     MODE.with_borrow(|mode| mode.busy)
@@ -136,32 +141,39 @@ pub fn enter(divider_id: u32, gap: CGRect, wide: f64) {
 pub fn exit(divider_id: Option<u32>) {
     let Some((generation, wide)) = switch_off() else { return };
     thread::spawn(move || {
-        if let Some(divider_id) = divider_id {
+        if divider_id.is_some() {
             on_main(move |mtm| {
                 if MODE.with_borrow(|mode| mode.generation == generation) {
                     set_divider(mtm, wide);
                 }
             });
-            wait_divider(divider_id, false);
         }
-        crate::mover::wait_until_still();
-        thread::sleep(FADE_DELAY);
-        on_main(move |_| {
-            MODE.with_borrow_mut(|mode| {
-                if mode.generation == generation {
-                    hide_shroud(mode);
-                }
-            })
-        });
+        hide_shroud_when_settled(generation, divider_id);
     });
 }
 
-/// Выключает узкий режим при сворачивании строки: спейсер и так уводит полосу за край,
-/// поэтому разделитель получает прежнюю длину и шторка уходит сразу.
-pub fn exit_now(mtm: MainThreadMarker) {
-    let Some((_, wide)) = switch_off() else { return };
-    MODE.with_borrow_mut(hide_shroud);
+/// Выключает узкий режим при сворачивании строки: разделитель сразу получает прежнюю
+/// длину, а шторка уходит, когда спейсер увёл полосу за край и строка встала.
+pub fn exit_now(mtm: MainThreadMarker, divider_id: Option<u32>) {
+    let Some((generation, wide)) = switch_off() else { return };
     set_divider(mtm, wide);
+    thread::spawn(move || hide_shroud_when_settled(generation, divider_id));
+}
+
+/// Убирает шторку выключения `generation`, когда разделитель снова широкий и строка встала.
+fn hide_shroud_when_settled(generation: u64, divider_id: Option<u32>) {
+    if let Some(divider_id) = divider_id {
+        wait_divider(divider_id, false);
+    }
+    crate::mover::wait_until_still();
+    thread::sleep(FADE_DELAY);
+    on_main(move |_| {
+        MODE.with_borrow_mut(|mode| {
+            if mode.generation == generation {
+                hide_shroud(mode);
+            }
+        })
+    });
 }
 
 /// Переводит режим в выключенный: шаги прежнего включения и нажатия его больше не застают.
@@ -251,7 +263,7 @@ fn hide_shroud(mode: &mut Mode) {
 }
 
 /// Ждёт, пока окно разделителя станет узким (`narrow`) или снова широким.
-fn wait_divider(divider_id: u32, narrow: bool) {
+pub fn wait_divider(divider_id: u32, narrow: bool) {
     let deadline = Instant::now() + LAYOUT_TIMEOUT;
     while Instant::now() < deadline {
         let width = crate::capture::icon_layout().into_iter().find(|w| w.id == divider_id).map(|w| w.width);

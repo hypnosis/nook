@@ -9,6 +9,8 @@ use objc2::{AnyThread, MainThreadMarker};
 use objc2_app_kit::{NSImage, NSStatusBar, NSStatusItem};
 use objc2_foundation::{NSSize, NSString, NSUserDefaults};
 
+use crate::capture::IconWindow;
+
 const AUTOSAVE: &str = "nook-divider";
 const ENABLED_KEY: &str = "panelDividerEnabled";
 
@@ -20,6 +22,14 @@ const WINDOW_CHROME: f64 = 16.0;
 const SCREEN_MARGIN: f64 = 20.0;
 /// Меньше этого macOS перемешивает строку и может спрятать сам `<`.
 const MIN_HIDING_WIDTH: f64 = 500.0;
+/// Окно узкого разделителя не шире этого. Виден он может и не быть: при длинном
+/// основном ряде он стоит под чёлкой.
+const NARROW_WINDOW_MAX: f64 = 40.0;
+
+/// Разделитель с окном `window` узкий: иконки левее него стоят в строке по порядку.
+pub fn is_narrow(window: &IconWindow) -> bool {
+    window.width <= NARROW_WINDOW_MAX
+}
 
 /// Есть ли иконки в панели — тогда разделитель создаётся при запуске.
 pub fn is_enabled() -> bool {
@@ -47,19 +57,37 @@ pub fn remove(item: &NSStatusItem) {
     NSStatusBar::systemStatusBar().removeStatusItem(item);
 }
 
+/// Левее узкого разделителя (окно `divider_id`) стоят иконки — панель не пуста.
+/// Окна разделителя нет в строке — считаем, что стоят.
+pub fn has_icons_left(divider_id: u32) -> bool {
+    let layout = crate::capture::icon_layout();
+    let Some(divider_x) = layout.iter().find(|window| window.id == divider_id).map(|window| window.x) else {
+        return true;
+    };
+    layout.iter().any(|window| crate::capture::is_panel_icon(window, divider_x))
+}
+
 /// Ширина, при которой разделитель (окно `divider_id`) прячет иконки левее себя,
 /// а самая левая из них остаётся на экране.
 pub fn hiding_width(divider_id: u32) -> f64 {
     let layout = crate::capture::icon_layout();
-    let Some(divider_x) = layout.iter().find(|window| window.id == divider_id).map(|window| window.x) else {
+    let Some(divider_x) = layout
+        .iter()
+        .find(|window| window.id == divider_id)
+        .map(|window| window.x)
+    else {
         return MIN_HIDING_WIDTH;
     };
     let panel_width: f64 = layout
         .iter()
-        .filter(|window| window.x < divider_x - crate::capture::POSITION_TOLERANCE)
+        .filter(|window| crate::capture::is_panel_icon(window, divider_x))
         .map(|window| window.width)
         .sum();
-    let Some(next_x) = layout.iter().find(|window| window.x > divider_x + crate::capture::POSITION_TOLERANCE).map(|window| window.x) else {
+    let Some(next_x) = layout
+        .iter()
+        .find(|window| window.x > divider_x + crate::capture::POSITION_TOLERANCE)
+        .map(|window| window.x)
+    else {
         return MIN_HIDING_WIDTH;
     };
     let width = next_x - WINDOW_CHROME - panel_width - SCREEN_MARGIN;

@@ -11,8 +11,8 @@
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{msg_send, sel};
 use objc2::MainThreadMarker;
+use objc2::{msg_send, sel};
 use objc2_app_kit::{NSEvent, NSEventMask, NSScreen};
 use objc2_foundation::NSTimer;
 
@@ -60,10 +60,8 @@ impl MouseMonitor {
     /// Подписывается на движения мыши. На каждое — зовёт `onMouseMoved:` у target.
     /// `target` (контроллер) живёт всё время работы приложения.
     pub fn start(target: Retained<AnyObject>) -> Self {
-        let handler = RcBlock::new(move |_event: core::ptr::NonNull<NSEvent>| {
-            unsafe {
-                let _: () = msg_send![&*target, onMouseMoved];
-            }
+        let handler = RcBlock::new(move |_event: core::ptr::NonNull<NSEvent>| unsafe {
+            let _: () = msg_send![&*target, onMouseMoved];
         });
         let monitor_handle = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
             NSEventMask::MouseMoved,

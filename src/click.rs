@@ -15,9 +15,7 @@ use objc2_app_kit::{NSApplication, NSWorkspace};
 use objc2_application_services::{
     AXIsProcessTrusted, AXIsProcessTrustedWithOptions, AXUIElement, AXValue, AXValueType,
 };
-use objc2_core_foundation::{
-    CFArray, CFDictionary, CFRetained, CFString, CFType, CGPoint, CGSize,
-};
+use objc2_core_foundation::{CFArray, CFDictionary, CFRetained, CFString, CFType, CGPoint, CGSize};
 use objc2_foundation::{NSDictionary, NSNumber, NSString};
 
 /// Насколько центр элемента Accessibility может отличаться от центра окна иконки, pt.
@@ -56,7 +54,11 @@ pub fn remember_owners(ids: Vec<u32>, notify: bool) {
     let pids = running_pids();
     std::thread::spawn(move || {
         let found = match_windows(&missing, &pids);
-        CACHE.lock().unwrap().get_or_insert_with(HashMap::new).extend(found);
+        CACHE
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .extend(found);
         if notify {
             notify_remembered();
         }
@@ -75,7 +77,12 @@ fn notify_remembered() {
 
 /// Процесс приложения, чья иконка — окно `id`, если её элемент уже найден.
 pub fn owner_pid(id: u32) -> Option<i32> {
-    CACHE.lock().unwrap().as_ref()?.get(&id).map(|item| item.pid)
+    CACHE
+        .lock()
+        .unwrap()
+        .as_ref()?
+        .get(&id)
+        .map(|item| item.pid)
 }
 
 /// Нажимает настоящую иконку, чьё окно — `id`. AXPress ждёт ответа приложения,
@@ -87,17 +94,36 @@ pub fn click_window(id: u32) {
         return;
     }
     std::thread::spawn(move || {
-        let cached = CACHE.lock().unwrap().as_mut().and_then(|cache| cache.remove(&id));
-        let item = cached.or_else(|| match_windows(&[id], &running_pids()).into_iter().next().map(|(_, item)| item));
+        let cached = CACHE
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|cache| cache.remove(&id));
+        let item = cached.or_else(|| {
+            match_windows(&[id], &running_pids())
+                .into_iter()
+                .next()
+                .map(|(_, item)| item)
+        });
         let Some(item) = item else {
             crate::log::append(&format!("click: для окна {id} иконки в AX нет"));
             return;
         };
-        let result = unsafe { item.element.perform_action(&CFString::from_static_str("AXPress")) };
+        let result = unsafe {
+            item.element
+                .perform_action(&CFString::from_static_str("AXPress"))
+        };
         if result.0 != 0 {
-            crate::log::append(&format!("click: AXPress по окну {id} — ошибка {}", result.0));
+            crate::log::append(&format!(
+                "click: AXPress по окну {id} — ошибка {}",
+                result.0
+            ));
         }
-        CACHE.lock().unwrap().get_or_insert_with(HashMap::new).insert(id, item);
+        CACHE
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .insert(id, item);
     });
 }
 
@@ -124,8 +150,14 @@ fn match_windows(ids: &[u32], pids: &[i32]) -> Vec<(u32, AxItem)> {
 /// одновременно: общее время — как у самого медленного, а не сумма.
 fn all_items(pids: &[i32]) -> Vec<(f64, AxItem)> {
     std::thread::scope(|scope| {
-        let workers: Vec<_> = pids.iter().map(|&pid| scope.spawn(move || app_items(pid))).collect();
-        workers.into_iter().flat_map(|worker| worker.join().unwrap_or_default()).collect()
+        let workers: Vec<_> = pids
+            .iter()
+            .map(|&pid| scope.spawn(move || app_items(pid)))
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap_or_default())
+            .collect()
     })
 }
 
@@ -133,14 +165,24 @@ fn all_items(pids: &[i32]) -> Vec<(f64, AxItem)> {
 fn app_items(pid: i32) -> Vec<(f64, AxItem)> {
     let app = unsafe { AXUIElement::new_application(pid) };
     unsafe { app.set_messaging_timeout(AX_TIMEOUT) };
-    let Some(bar) = attribute(&app, "AXExtrasMenuBar") else { return Vec::new() };
-    let Some(bar) = bar.downcast::<AXUIElement>().ok() else { return Vec::new() };
-    let Some(children) = attribute(&bar, "AXChildren") else { return Vec::new() };
-    let Some(children) = children.downcast::<CFArray>().ok() else { return Vec::new() };
+    let Some(bar) = attribute(&app, "AXExtrasMenuBar") else {
+        return Vec::new();
+    };
+    let Some(bar) = bar.downcast::<AXUIElement>().ok() else {
+        return Vec::new();
+    };
+    let Some(children) = attribute(&bar, "AXChildren") else {
+        return Vec::new();
+    };
+    let Some(children) = children.downcast::<CFArray>().ok() else {
+        return Vec::new();
+    };
     let mut items = Vec::new();
     for index in 0..children.count() {
         let item = unsafe { children.value_at_index(index) } as *mut AXUIElement;
-        let Some(item) = NonNull::new(item) else { continue };
+        let Some(item) = NonNull::new(item) else {
+            continue;
+        };
         let element = unsafe { CFRetained::retain(item) };
         if let Some(center) = center_x(&element) {
             items.push((center, AxItem { pid, element }));
@@ -164,7 +206,8 @@ fn request_accessibility() {
         &[&*NSNumber::new_bool(true)],
     );
     // NSDictionary бесшовно приводится к CFDictionary.
-    let options: &CFDictionary = unsafe { &*(&*options as *const NSDictionary<NSString, NSNumber> as *const CFDictionary) };
+    let options: &CFDictionary =
+        unsafe { &*(&*options as *const NSDictionary<NSString, NSNumber> as *const CFDictionary) };
     unsafe { AXIsProcessTrustedWithOptions(Some(options)) };
 }
 
@@ -185,8 +228,13 @@ fn center_x(item: &AXUIElement) -> Option<f64> {
     let mut point = CGPoint::new(0.0, 0.0);
     let mut extent = CGSize::new(0.0, 0.0);
     let ok = unsafe {
-        position.value(AXValueType::CGPoint, NonNull::from(&mut point).cast::<c_void>())
-            && size.value(AXValueType::CGSize, NonNull::from(&mut extent).cast::<c_void>())
+        position.value(
+            AXValueType::CGPoint,
+            NonNull::from(&mut point).cast::<c_void>(),
+        ) && size.value(
+            AXValueType::CGSize,
+            NonNull::from(&mut extent).cast::<c_void>(),
+        )
     };
     (ok && extent.width > 0.0).then_some(point.x + extent.width / 2.0)
 }
