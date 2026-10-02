@@ -20,6 +20,7 @@ use objc2_app_kit::{
     NSApplication, NSApplicationDelegate, NSButton, NSControlStateValueOn, NSEventType, NSImage,
     NSScreen, NSStatusItem, NSSwitch, NSWindowDidMoveNotification,
 };
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
     NSArray, NSNotification, NSNotificationCenter, NSNumber, NSPoint, NSTimer,
 };
@@ -109,6 +110,8 @@ pub struct ControllerIvars {
     divider_window: Cell<Option<u32>>,
     /// Мышь отвязана от курсора на время переноса.
     mouse_taken: Cell<bool>,
+    /// Открыто меню иконки у чёлки: разделитель сужен, строка под шторкой.
+    revealing: Cell<bool>,
 }
 
 define_class!(
@@ -524,7 +527,7 @@ define_class!(
         /// Окна иконок встали после раскрытия — снимаем те, что ушли под чёлку.
         #[unsafe(method(onPanelCapture:))]
         fn on_panel_capture(&self, _timer: *mut AnyObject) {
-            if !self.ivars().hidden.get() {
+            if !self.ivars().hidden.get() && !self.ivars().revealing.get() {
                 crate::capture::capture_under_notch(self.ivars().divider_window.get());
             }
         }
@@ -575,10 +578,53 @@ define_class!(
             self.finish_startup_step();
         }
 
-        /// Клик по клону в панели — нажимаем настоящую иконку под чёлкой.
+        /// Длина разделителя панели — для показа меню у чёлки и пробы шторки.
+        #[unsafe(method(setPanelDividerLength:))]
+        fn set_panel_divider_length(&self, length: f64) {
+            if let Some(divider) = self.ivars().divider.borrow().as_ref() {
+                divider.setLength(length);
+            }
+            crate::log::append(&format!("divider: длина {length}"));
+        }
+
+        /// Проба шторки закончена — обычное стартовое авто-скрытие.
+        #[unsafe(method(probeFinished))]
+        fn probe_finished(&self) {
+            crate::log::append("probe: готово — авто-скрытие");
+            if !self.ivars().hidden.get() {
+                self.toggle();
+            }
+        }
+
+        /// Клик по клону в панели — открываем меню настоящей иконки у чёлки.
+        /// Без промежутка у чёлки или разделителя — просто нажимаем иконку.
         #[unsafe(method(onCloneClick:))]
         fn on_clone_click(&self, sender: &NSButton) {
-            crate::click::click_window(sender.tag() as u32);
+            let icon_id = sender.tag() as u32;
+            if self.ivars().revealing.get() {
+                return;
+            }
+            let wide = self.ivars().divider.borrow().as_ref().map(|divider| divider.length());
+            let target = self.ivars().divider_window.get().zip(self.notch_gap()).zip(wide);
+            match target {
+                Some(((divider_id, gap), wide)) if wide > crate::divider::NARROW_WIDTH => {
+                    self.ivars().revealing.set(true);
+                    crate::reveal::open_menu(crate::reveal::Reveal {
+                        icon_id,
+                        divider_id,
+                        gap,
+                        narrow: crate::divider::NARROW_WIDTH,
+                        wide,
+                    });
+                }
+                _ => crate::click::click_window(icon_id),
+            }
+        }
+
+        /// Меню иконки закрылось, строка вернулась.
+        #[unsafe(method(onRevealDone))]
+        fn on_reveal_done(&self) {
+            self.ivars().revealing.set(false);
         }
 
         /// Таймер коллапса дожил: мышь была вне полоса COLLAPSE_DELAY секунд.
@@ -586,7 +632,7 @@ define_class!(
         #[unsafe(method(onAutoCollapse:))]
         fn on_auto_collapse(&self, _timer: *mut AnyObject) {
             self.ivars().collapse_timer.borrow_mut().take();
-            if self.ivars().hidden.get() || self.ivars().applying.get() {
+            if self.ivars().hidden.get() || self.ivars().applying.get() || self.ivars().revealing.get() {
                 return;
             }
             crate::log::append("авто-collapse: мышь ушла, сворачиваю");
@@ -616,6 +662,7 @@ impl Controller {
             apply_waits: Cell::new(0),
             divider_window: Cell::new(None),
             mouse_taken: Cell::new(false),
+            revealing: Cell::new(false),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -838,9 +885,40 @@ impl Controller {
         let left = self.ivars().startup_steps_pending.get().saturating_sub(1);
         self.ivars().startup_steps_pending.set(left);
         if left == 0 && !self.ivars().hidden.get() {
+            if crate::probe::take_request() && self.start_shroud_probe() {
+                return;
+            }
             crate::log::append("стартовый снимок и кнопки готовы — авто-скрытие");
             self.toggle();
         }
+    }
+
+    /// Временная проба шторки над промежутком у чёлки.
+    fn start_shroud_probe(&self) -> bool {
+        let Some(wide) = self.ivars().divider.borrow().as_ref().map(|divider| divider.length()) else {
+            return false;
+        };
+        let Some(gap) = self.notch_gap() else { return false };
+        crate::probe::run(gap, crate::divider::NARROW_WIDTH, wide);
+        true
+    }
+
+    /// Участок строки меню от правого края чёлки до ≡◂, в координатах CG: только здесь
+    /// строка меняется, когда разделитель панели сужен.
+    fn notch_gap(&self) -> Option<CGRect> {
+        let mtm = self.mtm();
+        let (notch_right, spacer_x) = {
+            let items_ref = self.ivars().items.borrow();
+            let items = items_ref.as_ref()?;
+            let screen = items.spacer.button(mtm)?.window()?.screen()?;
+            (screen.auxiliaryTopRightArea().origin.x, status_bar::item_origin_x(&items.spacer, mtm)?)
+        };
+        let height = crate::capture::icon_layout().first()?.height;
+        if notch_right <= 0.0 || spacer_x <= notch_right {
+            crate::log::append("reveal: участка у чёлки нет");
+            return None;
+        }
+        Some(CGRect::new(CGPoint::new(notch_right, 0.0), CGSize::new(spacer_x - notch_right, height)))
     }
 
     /// Запускает монитор мыши, если ещё не запущен.

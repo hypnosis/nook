@@ -283,7 +283,7 @@ fn settled(id: u32, start_x: f64) -> bool {
 
 /// Ждёт, пока строка меню доиграет анимацию: `STILL_READS` замеров подряд совпали
 /// с предыдущим. Возвращает, сколько миллисекунд ждали.
-fn wait_until_still() -> u128 {
+pub fn wait_until_still() -> u128 {
     let started = Instant::now();
     let positions = || -> Vec<(u32, f64)> {
         crate::capture::icon_layout().iter().map(|window| (window.id, window.x)).collect()

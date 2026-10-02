@@ -84,6 +84,11 @@ fn notify_remembered() {
     });
 }
 
+/// Процесс приложения, чья иконка — окно `id`, если её элемент уже найден.
+pub fn owner_pid(id: u32) -> Option<i32> {
+    CACHE.lock().unwrap().as_ref()?.get(&id).map(|item| item.pid)
+}
+
 /// Нажимает настоящую иконку, чьё окно — `id`. AXPress ждёт ответа приложения,
 /// поэтому поиск и нажатие идут в фоновом потоке.
 pub fn click_window(id: u32) {
