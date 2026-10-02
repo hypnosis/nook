@@ -4,14 +4,14 @@
 
 ## Цель
 
-Убрать временную локальную подпись «Nook Local Dev», когда появится настоящий Developer ID (см. ADR 011).
+Убрать временную локальную подпись «Nook Local Dev» и перейти на настоящий Developer ID (см. ADR 011).
 
 ## Объём работ
 
-- [ ] Удалить `scripts/install-local.sh` (помечен `HARDCODE`).
-- [ ] Удалить сертификат и ключ «Nook Local Dev» из связки ключей входа (Связка ключей → Мои сертификаты).
+- [x] Убрать переподпись сертификатом из `scripts/install-local.sh` — 2026-10-03, локальная установка подписана ad-hoc, как релиз.
+- [x] Удалить сертификат и ключ «Nook Local Dev» из связки ключей входа — 2026-10-03.
 - [ ] Подписывать сборки Developer ID в `bundle.sh` / `make-dmg.sh`.
 
 ## Критерий готовности
 
-`security find-identity -p codesigning` не показывает «Nook Local Dev», в репозитории нет упоминаний `Nook Local Dev`, права Nook (запись экрана, Accessibility) переживают пересборку за счёт Developer ID.
+`security find-identity -p codesigning` не показывает «Nook Local Dev», права Nook (запись экрана, Accessibility) переживают пересборку за счёт Developer ID.
