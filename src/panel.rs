@@ -9,7 +9,7 @@ use objc2::runtime::AnyObject;
 use objc2::{msg_send, sel, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSBackingStoreType, NSButton, NSEvent, NSImage, NSPanel, NSStatusWindowLevel, NSView,
-    NSWindow, NSWindowStyleMask,
+    NSWindow, NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{NSArray, NSNumber, NSPoint, NSRect, NSSize};
 
@@ -41,7 +41,9 @@ pub struct Panel {
 impl Panel {
     pub fn new(mtm: MainThreadMarker) -> Self {
         let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(PANEL_WIDTH, PANEL_HEIGHT));
-        let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
+        let style = NSWindowStyleMask::Titled
+            | NSWindowStyleMask::FullSizeContentView
+            | NSWindowStyleMask::NonactivatingPanel;
         let window: Retained<NSPanel> = unsafe {
             msg_send![
                 NSPanel::alloc(mtm),
@@ -53,10 +55,20 @@ impl Panel {
         };
         unsafe { window.setReleasedWhenClosed(false) };
         window.setLevel(NSStatusWindowLevel);
-        let theme = theme::current();
-        window.setBackgroundColor(Some(&theme::panel_background(theme)));
+        window.setTitlebarAppearsTransparent(true);
+        window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
+        for button in [
+            NSWindowButton::CloseButton,
+            NSWindowButton::MiniaturizeButton,
+            NSWindowButton::ZoomButton,
+        ] {
+            if let Some(button) = window.standardWindowButton(button) {
+                button.setHidden(true);
+            }
+        }
+        window.setMovable(false);
         window.setHasShadow(true);
-        Self { window, theme, cache: [None, None], pending: None }
+        Self { window, theme: theme::current(), cache: [None, None], pending: None }
     }
 
     /// Показывает панель под строкой меню, правым краем у окна якоря. Если снимков
@@ -121,13 +133,13 @@ impl Panel {
         self.cache[self.theme.index()].as_ref().is_some_and(|icons| !icons.images.is_empty())
     }
 
-    /// Меняет фон и иконки под новую тему из кэша, без пересъёмки.
+    /// Меняет иконки под новую тему из кэша, без пересъёмки. Фон и скругление
+    /// рисует сама macOS как у обычного окна.
     pub fn set_theme(&mut self, mtm: MainThreadMarker, target: &AnyObject, theme: Theme) {
         if theme == self.theme {
             return;
         }
         self.theme = theme;
-        self.window.setBackgroundColor(Some(&theme::panel_background(theme)));
         self.render(mtm, target);
         crate::log::append(&format!("панель: тема {theme:?}"));
     }

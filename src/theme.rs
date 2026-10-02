@@ -6,7 +6,7 @@ use std::ffi::c_void;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{sel, AnyThread, Message};
-use objc2_app_kit::{NSColor, NSImage};
+use objc2_app_kit::NSImage;
 use objc2_core_foundation::{CFRetained, CGRect};
 use objc2_core_graphics::{
     CGBitmapContextCreate, CGBitmapContextCreateImage, CGColorSpace, CGContext, CGImage,
@@ -16,10 +16,6 @@ use objc2_foundation::{NSDistributedNotificationCenter, NSSize, NSString, NSUser
 
 const STYLE_KEY: &str = "AppleInterfaceStyle";
 const THEME_CHANGED: &str = "AppleInterfaceThemeChangedNotification";
-/// Серый фон панели, как у меню macOS без прозрачности.
-const LIGHT_BACKGROUND: f64 = 234.0 / 255.0;
-// HARDCODE: временно, взять точный цвет со скриншота тёмной темы.
-const DARK_BACKGROUND: f64 = 40.0 / 255.0;
 /// Иконка темнее этого — тёмная, светлее `LIGHT_TONE` — светлая; между ними цветная, не трогаем.
 const DARK_TONE: f64 = 0.35;
 const LIGHT_TONE: f64 = 0.65;
@@ -65,14 +61,6 @@ pub fn observe(target: &AnyObject) {
             None,
         );
     }
-}
-
-pub fn panel_background(theme: Theme) -> Retained<NSColor> {
-    let white = match theme {
-        Theme::Light => LIGHT_BACKGROUND,
-        Theme::Dark => DARK_BACKGROUND,
-    };
-    NSColor::colorWithWhite_alpha(white, 1.0)
 }
 
 /// Снимок, подогнанный под тему: иконка не того тона инвертируется, цветная остаётся.
