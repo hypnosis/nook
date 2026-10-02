@@ -71,3 +71,7 @@ lto = true
 strip = true
 codegen-units = 1
 panic = "abort"
+
+[features]
+# Диагностический лог в /tmp/nook-debug.log.
+debug-log = []

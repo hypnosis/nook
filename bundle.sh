@@ -9,7 +9,8 @@ APP_DIR="${APP_NAME}.app"
 BINARY_NAME="${SLUG}"
 
 echo "==> Building ${APP_NAME}..."
-cargo build
+# NOOK_DEBUG_LOG=1 — сборка с диагностическим логом в /tmp/nook-debug.log.
+cargo build ${NOOK_DEBUG_LOG:+--features debug-log}
 
 echo "==> Creating .app bundle structure..."
 mkdir -p "${APP_DIR}/Contents/MacOS"

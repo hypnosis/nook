@@ -1,4 +1,4 @@
-//! Диагностический лог в файл, только в отладочной сборке: релиз молчит.
+//! Диагностический лог в файл, только в сборке с флагом `debug-log`: обычная сборка молчит.
 //! Приложение — агент без окна, stdout не виден, поэтому лог смотрят через
 //! `tail -f /tmp/nook-debug.log`.
 
@@ -13,7 +13,7 @@ const LOG_PATH: &str = "/tmp/nook-debug.log";
 /// Намеренно не паникует при ошибке записи: лог — диагностика, его отказ
 /// не должен ронять само приложение. Если файл недоступен — молча пропускаем.
 pub fn append(message: &str) {
-    if !cfg!(debug_assertions) {
+    if !cfg!(feature = "debug-log") {
         return;
     }
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
@@ -27,7 +27,7 @@ pub fn append(message: &str) {
 /// Перезаписывает лог-файл с нуля. Вызывается один раз на старте,
 /// чтобы каждый запуск читался отдельно, без хвоста прошлых сессий.
 pub fn reset() {
-    if !cfg!(debug_assertions) {
+    if !cfg!(feature = "debug-log") {
         return;
     }
     if let Ok(mut file) = OpenOptions::new()

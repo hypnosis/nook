@@ -17,11 +17,9 @@ use objc2_core_graphics::CGImage;
 use crate::shroud::Shroud;
 
 // HARDCODE: тайминги узкого режима; вынести в конфиг позже.
-const PAINT_DELAY: Duration = Duration::from_millis(50);
+const PAINT_DELAY: Duration = Duration::from_millis(20);
 const LAYOUT_POLL: Duration = Duration::from_millis(5);
 const LAYOUT_TIMEOUT: Duration = Duration::from_millis(500);
-/// Приложение успевает узнать новое место своей иконки.
-const PRESS_DELAY: Duration = Duration::from_millis(50);
 /// Иконка, уходящая обратно в спрятанные, ещё гаснет после того, как встала на место.
 const FADE_DELAY: Duration = Duration::from_millis(150);
 const MENU_POLL: Duration = Duration::from_millis(50);
@@ -43,8 +41,8 @@ struct Mode {
     generation: u64,
     /// Длина разделителя до сужения.
     wide: f64,
-    /// Иконка, нажатая, пока режим включался или шло прошлое нажатие.
-    pending: Option<u32>,
+    /// Иконка, нажатая, пока режим включался или шло прошлое нажатие, и время клика.
+    pending: Option<(u32, Instant)>,
     /// Идёт нажатие: меню иконки открыто.
     busy: bool,
     shroud: Option<Shroud>,
@@ -84,6 +82,7 @@ pub fn enter(divider_id: u32, gap: CGRect, wide: f64) {
         mode.generation
     });
     thread::spawn(move || {
+        let started = Instant::now();
         let Some(image) = crate::capture::screen_rect(gap) else {
             crate::log::append("reveal: снимка полосы нет — узкий режим не включаю");
             on_main(move |_| {
@@ -113,7 +112,6 @@ pub fn enter(divider_id: u32, gap: CGRect, wide: f64) {
         wait_divider(divider_id, true);
         crate::mover::wait_until_still();
         let strip = strip_of(&image, gap, divider_id);
-        thread::sleep(PRESS_DELAY);
         on_main(move |mtm| {
             let pending = MODE.with_borrow_mut(|mode| {
                 if mode.generation != generation {
@@ -125,10 +123,11 @@ pub fn enter(divider_id: u32, gap: CGRect, wide: f64) {
                 mode.stage = Stage::Ready;
                 mode.pending.take()
             });
-            if let Some(icon_id) = pending {
-                press_now(icon_id);
+            if let Some((icon_id, clicked)) = pending {
+                press_now(icon_id, clicked);
             }
         });
+        crate::log::append(&format!("reveal: узкий режим готов за {} мс", started.elapsed().as_millis()));
     });
 }
 
@@ -182,16 +181,17 @@ fn switch_off() -> Option<(u64, f64)> {
 /// Нажимает иконку панели: в готовом режиме сразу, во включающемся или во время
 /// прошлого нажатия — как только освободится. Без узкого режима возвращает false.
 pub fn press(icon_id: u32) -> bool {
+    let clicked = Instant::now();
     let (stage, busy) = MODE.with_borrow_mut(|mode| {
         if mode.stage == Stage::Entering || (mode.stage == Stage::Ready && mode.busy) {
-            mode.pending = Some(icon_id);
+            mode.pending = Some((icon_id, clicked));
         }
         (mode.stage, mode.busy)
     });
     match stage {
         Stage::Off => false,
         Stage::Ready if !busy => {
-            press_now(icon_id);
+            press_now(icon_id, clicked);
             true
         }
         _ => true,
@@ -199,7 +199,8 @@ pub fn press(icon_id: u32) -> bool {
 }
 
 /// Нажимает иконку на месте, у чёлки, не трогая курсор, и ждёт, пока её меню закроется.
-fn press_now(icon_id: u32) {
+/// `clicked` — когда пришёл клик по копии.
+fn press_now(icon_id: u32, clicked: Instant) {
     let generation = MODE.with_borrow_mut(|mode| {
         mode.busy = true;
         mode.generation
@@ -208,7 +209,7 @@ fn press_now(icon_id: u32) {
     thread::spawn(move || {
         let windows_before = pid.map(crate::capture::onscreen_windows_of).unwrap_or_default();
         crate::click::click_window(icon_id);
-        wait_menu_closed(pid, &windows_before);
+        wait_menu_closed(pid, &windows_before, clicked);
         on_main(move |_| {
             let pending = MODE.with_borrow_mut(|mode| {
                 mode.busy = false;
@@ -217,8 +218,8 @@ fn press_now(icon_id: u32) {
                 }
                 mode.pending.take()
             });
-            if let Some(next) = pending {
-                press_now(next);
+            if let Some((next, clicked)) = pending {
+                press_now(next, clicked);
             }
         });
     });
@@ -263,7 +264,7 @@ fn wait_divider(divider_id: u32, narrow: bool) {
 }
 
 /// Ждёт, пока у приложения `pid` появится новое окно (меню или поповер) и закроется.
-fn wait_menu_closed(pid: Option<i32>, windows_before: &[u32]) {
+fn wait_menu_closed(pid: Option<i32>, windows_before: &[u32], clicked: Instant) {
     let Some(pid) = pid else {
         crate::log::append("reveal: процесс иконки неизвестен — жду только появления");
         thread::sleep(MENU_APPEAR_TIMEOUT);
@@ -280,6 +281,7 @@ fn wait_menu_closed(pid: Option<i32>, windows_before: &[u32]) {
         }
         thread::sleep(MENU_POLL);
     };
+    crate::log::append(&format!("reveal: клик → меню {} мс", clicked.elapsed().as_millis()));
     let close_deadline = Instant::now() + MENU_MAX_OPEN;
     while crate::capture::onscreen_windows_of(pid).contains(&menu) {
         if Instant::now() > close_deadline {

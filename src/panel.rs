@@ -8,7 +8,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, sel, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSBackingStoreType, NSButton, NSEvent, NSImage, NSPanel, NSStatusWindowLevel, NSView,
+    NSBackingStoreType, NSButton, NSEvent, NSEventMask, NSImage, NSPanel, NSStatusWindowLevel, NSView,
     NSWindow, NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{NSArray, NSNumber, NSPoint, NSRect, NSSize};
@@ -163,6 +163,7 @@ impl Panel {
             };
             view.setBordered(false);
             view.setRefusesFirstResponder(true);
+            view.sendActionOn(NSEventMask::LeftMouseDown);
             view.setTag(id as isize);
             let y = ((PANEL_HEIGHT - size.height) / 2.0).max(0.0);
             view.setFrame(NSRect::new(NSPoint::new(x, y), size));

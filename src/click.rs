@@ -86,10 +86,9 @@ pub fn click_window(id: u32) {
         request_accessibility();
         return;
     }
-    let pids = running_pids();
     std::thread::spawn(move || {
         let cached = CACHE.lock().unwrap().as_mut().and_then(|cache| cache.remove(&id));
-        let item = cached.or_else(|| match_windows(&[id], &pids).into_iter().next().map(|(_, item)| item));
+        let item = cached.or_else(|| match_windows(&[id], &running_pids()).into_iter().next().map(|(_, item)| item));
         let Some(item) = item else {
             crate::log::append(&format!("click: для окна {id} иконки в AX нет"));
             return;

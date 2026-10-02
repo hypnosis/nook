@@ -897,7 +897,8 @@ impl Controller {
     fn capture_panel_when_settled(&self) {
         let divider_id = self.ivars().divider_window.get();
         thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs_f64(PANEL_CAPTURE_DELAY);
+            let started = Instant::now();
+            let deadline = started + Duration::from_secs_f64(PANEL_CAPTURE_DELAY);
             let divider_shown = || {
                 crate::capture::icon_layout().iter().any(|window| Some(window.id) == divider_id && window.x >= 0.0)
             };
@@ -905,6 +906,7 @@ impl Controller {
                 thread::sleep(PANEL_SETTLE_POLL);
             }
             crate::mover::wait_until_still();
+            crate::log::append(&format!("панель: строка встала за {} мс", started.elapsed().as_millis()));
             DispatchQueue::main().exec_async(|| {
                 let mtm = MainThreadMarker::new().expect("main queue");
                 if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
