@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-10-03
+
+### Added
+- Panel for icons hidden under the notch: a strip under the menu bar shows snapshots of the icons the notch hides. Clicking a snapshot presses the real icon, and its menu opens next to the panel. See ADR 012, 016, 017.
+- The panel follows the macOS light/dark theme and refreshes its icons every 2 s while open.
+- Settings window with General, Layout and Permissions sections. The layout editor arranges icons between the main row and the panel and moves the real menu bar icons on Apply; icons that refuse to move stay put. See ADR 013.
+- Permissions window on launch: explains both permissions and opens the matching System Settings pane.
+- Dock icon while a Nook window is open.
+
+### Changed
+- The panel needs two macOS permissions: Screen Recording (snapshots of the menu bar only) and Accessibility (pressing the real icons). Hiding icons works without them.
+- The first panel open is instant: icons and their Accessibility items are captured at startup.
+- Builds are ad-hoc signed, so permissions must be granted again after each update. If Nook is already switched on in System Settings but still asks, remove it with − and grant again (ADR 011).
+
 ## [0.2.1] - 2026-07-12
 
 ### Added

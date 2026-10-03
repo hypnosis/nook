@@ -7,7 +7,7 @@ APP_NAME="Nook"
 SLUG="nook"
 APP_DIR="${APP_NAME}.app"
 BINARY_NAME="${SLUG}"
-VERSION="0.2.1"
+VERSION="0.3.0"
 
 DMG_NAME="${SLUG}-${VERSION}.dmg"
 VOL_NAME="${APP_NAME}"
@@ -41,9 +41,9 @@ cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
     <key>CFBundleExecutable</key>
     <string>nook</string>
     <key>CFBundleVersion</key>
-    <string>0.2.1</string>
+    <string>0.3.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2.1</string>
+    <string>0.3.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleIconFile</key>

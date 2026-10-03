@@ -37,9 +37,9 @@ cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
     <key>CFBundleExecutable</key>
     <string>nook</string>
     <key>CFBundleVersion</key>
-    <string>0.2.1</string>
+    <string>0.3.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2.1</string>
+    <string>0.3.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleIconFile</key>
