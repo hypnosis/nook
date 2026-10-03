@@ -79,6 +79,34 @@ pub fn settings_granted(lang: Lang) -> &'static str {
 }
 
 /// Кнопка перехода в Системные настройки, когда разрешения нет.
+pub fn settings_reset_permissions(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Reset permissions",
+        Lang::Ru => "Сбросить разрешения",
+    }
+}
+
+pub fn settings_reset_permissions_detail(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Removes Nook from System Settings and restarts it. Grant the permissions again after the restart.",
+        Lang::Ru => "Убирает Nook из Системных настроек и перезапускает его. После перезапуска выдайте разрешения заново.",
+    }
+}
+
+pub fn settings_reset_button(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Reset",
+        Lang::Ru => "Сбросить",
+    }
+}
+
+pub fn settings_permissions_stale(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Permissions were granted before but don't work now — this happens after an update. Reset them and grant again.",
+        Lang::Ru => "Разрешения выдавались раньше, но сейчас не действуют — так бывает после обновления. Сбросьте их и выдайте заново.",
+    }
+}
+
 pub fn permission_open_settings(lang: Lang) -> &'static str {
     match lang {
         Lang::En => "Open System Settings",
@@ -198,6 +226,13 @@ pub fn editor_not_landed(lang: Lang) -> &'static str {
     match lang {
         Lang::En => "Not everything moved — the rows show what actually happened.",
         Lang::Ru => "Не всё встало на место — в рядах показано, как вышло.",
+    }
+}
+
+pub fn editor_not_started(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Couldn't start — the divider didn't take its place. Try again.",
+        Lang::Ru => "Не удалось начать — разделитель не встал на место. Попробуйте ещё раз.",
     }
 }
 

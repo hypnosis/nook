@@ -25,8 +25,6 @@ const FADE_DELAY: Duration = Duration::from_millis(150);
 const MENU_POLL: Duration = Duration::from_millis(50);
 const MENU_APPEAR_TIMEOUT: Duration = Duration::from_millis(1500);
 const MENU_MAX_OPEN: Duration = Duration::from_secs(120);
-/// Окно разделителя не шире этого — он сужен.
-const NARROW_WINDOW: f64 = 40.0;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Stage {
@@ -266,8 +264,8 @@ fn hide_shroud(mode: &mut Mode) {
 pub fn wait_divider(divider_id: u32, narrow: bool) {
     let deadline = Instant::now() + LAYOUT_TIMEOUT;
     while Instant::now() < deadline {
-        let width = crate::capture::icon_layout().into_iter().find(|w| w.id == divider_id).map(|w| w.width);
-        if width.is_some_and(|width| (width <= NARROW_WINDOW) == narrow) {
+        let window = crate::capture::icon_layout().into_iter().find(|w| w.id == divider_id);
+        if window.is_some_and(|window| crate::divider::is_narrow(&window) == narrow) {
             return;
         }
         thread::sleep(LAYOUT_POLL);

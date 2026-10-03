@@ -50,6 +50,11 @@ pub fn granted_color() -> Retained<NSColor> {
     NSColor::systemGreenColor()
 }
 
+/// Цвет предупреждения: что-то не работает и требует действия.
+pub fn warning_color() -> Retained<NSColor> {
+    NSColor::systemOrangeColor()
+}
+
 pub fn label(mtm: MainThreadMarker, text: &str) -> Retained<NSTextField> {
     NSTextField::labelWithString(&NSString::from_str(text), mtm)
 }

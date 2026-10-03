@@ -22,6 +22,8 @@ const SCREEN_RECORDING_PANE: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
 const GRANTED_VERSION_KEY: &str = "permissionsGrantedVersion";
 const TCCUTIL: &str = "/usr/bin/tccutil";
+/// Пауза в секундах между выходом Nook и его новым запуском.
+const RELAUNCH_DELAY: &str = "1";
 /// Совпадает с CFBundleIdentifier в Info.plist.
 const BUNDLE_ID: &str = "com.hypnosis.nook";
 
@@ -89,18 +91,18 @@ pub fn remember_if_granted() {
     }
 }
 
-/// Разрешения выдавали прошлой версии, а у этой их нет: записи в Системных настройках
-/// остались от прежней подписи и включены впустую. Убирает их, чтобы macOS спросила заново.
-/// Возвращает, был ли сброс.
-pub fn reset_stale_after_update() -> bool {
-    let granted_version = NSUserDefaults::standardUserDefaults()
+/// Разрешения выдавали раньше, а сейчас какого-то нет: после пересборки или обновления
+/// записи в Системных настройках остались от прежней подписи и включены впустую.
+pub fn look_stale() -> bool {
+    let granted_before = NSUserDefaults::standardUserDefaults()
         .stringForKey(&NSString::from_str(GRANTED_VERSION_KEY))
-        .map(|version| version.to_string());
-    let updated = granted_version.is_some_and(|version| version != env!("CARGO_PKG_VERSION"));
-    if !updated || all_granted() {
-        return false;
-    }
-    for permission in ALL.iter().filter(|permission| !permission.is_granted()) {
+        .is_some();
+    granted_before && !all_granted()
+}
+
+/// Убирает записи Nook из всех разрешений, чтобы macOS спросила заново.
+pub fn reset_all() {
+    for permission in ALL {
         let reset = Command::new(TCCUTIL)
             .args(["reset", permission.tcc_service(), BUNDLE_ID])
             .output();
@@ -108,7 +110,24 @@ pub fn reset_stale_after_update() -> bool {
             crate::log::append(&format!("permissions: сброс {} не удался", permission.tcc_service()));
         }
     }
-    true
+    NSUserDefaults::standardUserDefaults().removeObjectForKey(&NSString::from_str(GRANTED_VERSION_KEY));
+}
+
+/// Через мгновение после выхода снова открывает этот же Nook.app.
+pub fn relaunch_later() {
+    let app = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.ancestors().nth(3).map(|path| path.to_path_buf()));
+    let Some(app) = app else {
+        crate::log::append("permissions: путь к Nook.app не найден — перезапуска не будет");
+        return;
+    };
+    let relaunch = Command::new("/bin/sh")
+        .args(["-c", "sleep \"$1\"; /usr/bin/open \"$0\"", &app.to_string_lossy(), RELAUNCH_DELAY])
+        .spawn();
+    if relaunch.is_err() {
+        crate::log::append("permissions: перезапуск не запустился");
+    }
 }
 
 pub fn open_accessibility_pane() {
@@ -176,6 +195,7 @@ impl PermissionRows {
 
     /// Перечитывает разрешения: их могли выдать в Системных настройках.
     pub fn refresh(&self) {
+        remember_if_granted();
         for (permission, status, button) in &self.rows {
             let granted = permission.is_granted();
             status.setHidden(!granted);

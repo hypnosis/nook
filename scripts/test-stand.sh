@@ -12,10 +12,10 @@ N="${1:-10}"
 APP="Nook.app"
 LOG="/tmp/nook-debug.log"
 
-pkill -i nook 2>/dev/null; sleep 1
+pkill -x nook 2>/dev/null; sleep 1
 
 echo "==> Сборка release..."
-cargo build --release 2>&1 | tail -1 || { echo "СБОРКА УПАЛА"; exit 1; }
+cargo build --release --features debug-log 2>&1 | tail -1 || { echo "СБОРКА УПАЛА"; exit 1; }
 
 echo "==> Заворачиваю в ${APP}..."
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -37,14 +37,12 @@ codesign -s - --force "$APP" >/dev/null 2>&1
 echo "==> ${N} запусков..."
 ok=0; bad=0
 for i in $(seq 1 "$N"); do
-  pkill -i nook 2>/dev/null; sleep 1.2
+  pkill -x nook 2>/dev/null; sleep 1.2
   rm -f "$LOG"
   open "$APP"
   sleep 4
-  # Берём строку guard: (координаты на момент первого toggle — финальное состояние).
-  # Если её нет — последнюю placement: с координатами вида spacer.x=...
+  # Строка guard: — координаты на момент первого toggle.
   line=$(grep -E "guard:" "$LOG" 2>/dev/null | tail -1)
-  [ -z "$line" ] && line=$(grep -E "placement: spacer.x=" "$LOG" 2>/dev/null | tail -1)
   sx=$(echo "$line" | grep -oE "spacer.x=(Some\()?[0-9.]+" | grep -oE "[0-9]+" | head -1)
   ax=$(echo "$line" | grep -oE "anchor.x=(Some\()?[0-9.]+" | grep -oE "[0-9]+" | head -1)
   sx="${sx:-NIL}"; ax="${ax:-NIL}"
@@ -56,7 +54,7 @@ for i in $(seq 1 "$N"); do
   fi
   printf "  %2d: spacer=%-6s anchor=%-6s -> %s\n" "$i" "$sx" "$ax" "$verdict"
 done
-pkill -i nook 2>/dev/null
+pkill -x nook 2>/dev/null
 
 echo ""
 echo "==================================="

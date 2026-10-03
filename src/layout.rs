@@ -10,6 +10,8 @@ pub struct Layout {
     panel: Vec<u32>,
     main: Vec<u32>,
     applying: bool,
+    /// Ручной порядок, отложенный на время автоматического расположения.
+    manual: Option<(Vec<u32>, Vec<u32>)>,
 }
 
 impl Layout {
@@ -34,6 +36,20 @@ impl Layout {
         self.applying = false;
     }
 
+    /// Включено автоматическое расположение: ручной порядок откладывается до выключения.
+    pub fn enter_automatic(&mut self) {
+        if self.manual.is_none() {
+            self.manual = Some((self.panel.clone(), self.main.clone()));
+        }
+    }
+
+    /// Автоматическое расположение выключено: возвращается отложенный ручной порядок.
+    pub fn leave_automatic(&mut self) {
+        if let Some((panel, main)) = self.manual.take() {
+            self.update(panel, main);
+        }
+    }
+
     /// Порядок, который поставило «Применить».
     pub fn set(&mut self, panel: &[u32], main: &[u32]) {
         self.update(panel.to_vec(), main.to_vec());
@@ -47,7 +63,7 @@ impl Layout {
 
     /// Сверяет порядок со строкой меню: известные иконки остаются в своём ряду и на своём
     /// месте (при `automatic` ряд — где стоит), новые встают в конец ряда, где стоят,
-    /// пропавшие убираются. Порядок пуст —
+    /// пропавшие убираются; при `automatic` основной ряд — как стоит. Порядок пуст —
     /// берётся как стоит. `divider` — окно разделителя панели (None — его нет), `ignore` —
     /// окно убранного разделителя, которое ещё не исчезло; `spacer_x` — левый край ≡◂.
     /// Широкий разделитель прячет иконки панели, основной ряд остаётся виден; при узком
@@ -92,11 +108,9 @@ impl Layout {
             return false;
         }
         let (panel, main) = if automatic {
-            // Набор панели решает macOS: иконка переходит в тот ряд, где стоит.
-            (
-                keep_order(&self.panel, &panel.clone(), &self.panel, panel),
-                keep_order(&self.main, &main.clone(), &self.main, main),
-            )
+            // Набор панели решает macOS: иконка переходит в тот ряд, где стоит. Основной
+            // ряд виден, его порядок меняют перетаскиванием в строке.
+            (keep_order(&self.panel, &panel.clone(), &self.panel, panel), main)
         } else {
             let present: Vec<u32> = panel.iter().chain(&main).copied().collect();
             let known: Vec<u32> = self.panel.iter().chain(&self.main).copied().collect();

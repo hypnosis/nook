@@ -7,8 +7,8 @@ set -o pipefail
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_PATH="$SCRIPT_DIR/nook.app"
-PROCESS_PATTERN="nook.app/Contents/MacOS/nook"
+APP_PATH="$SCRIPT_DIR/Nook.app"
+PROCESS_PATTERN="Nook.app/Contents/MacOS/nook"
 
 # Colors for output
 RED='\033[0;31m'
@@ -46,7 +46,7 @@ start_app() {
     fi
 
     if [ ! -d "$APP_PATH" ]; then
-        echo -e "${RED}Error: nook.app not found at $APP_PATH${NC}"
+        echo -e "${RED}Error: Nook.app not found at $APP_PATH${NC}"
         return 1
     fi
 

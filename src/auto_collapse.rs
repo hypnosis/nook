@@ -34,8 +34,7 @@ pub fn make_collapse_timer(target: &AnyObject) -> Retained<NSTimer> {
     }
 }
 
-/// Высота полосы menu bar для детекта «мышь ушла». ~40px = реальная строка + запас,
-/// чтобы не сворачивать при лёгком уводе мыши вниз.
+/// Высота полосы menu bar с запасом для детекта «мышь ушла».
 // HARDCODE: высота полосы menu bar; вынести в конфиг позже.
 const MENU_BAR_STRIP: f64 = 40.0;
 

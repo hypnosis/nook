@@ -7,6 +7,7 @@ APP_NAME="Nook"
 SLUG="nook"
 APP_DIR="${APP_NAME}.app"
 BINARY_NAME="${SLUG}"
+VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 
 echo "==> Building ${APP_NAME}..."
 # NOOK_DEBUG_LOG=1 — сборка с диагностическим логом в /tmp/nook-debug.log.
@@ -23,7 +24,7 @@ echo "==> Copying app icon..."
 cp "assets/Nook.icns" "${APP_DIR}/Contents/Resources/Nook.icns"
 
 echo "==> Writing Info.plist..."
-cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
+cat > "${APP_DIR}/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -37,9 +38,9 @@ cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
     <key>CFBundleExecutable</key>
     <string>nook</string>
     <key>CFBundleVersion</key>
-    <string>0.3.0</string>
+    <string>${VERSION}</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.3.0</string>
+    <string>${VERSION}</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleIconFile</key>
@@ -47,7 +48,7 @@ cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
     <key>LSUIElement</key>
     <true/>
     <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
+    <string>26.0</string>
 </dict>
 </plist>
 PLIST

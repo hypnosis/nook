@@ -7,8 +7,9 @@
 //! они не на своём месте, поэтому в расчёт идут только нарисованные. На время переноса
 //! курсор спрятан, а физическая мышь отвязана от него.
 
+use std::cell::Cell;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -42,6 +43,7 @@ const DROP_OFFSET: f64 = 2.0;
 /// Вес неподвижной иконки в цепочке: она должна попасть в цепочку при любом раскладе.
 const PINNED_WEIGHT: usize = 1000;
 /// Насколько заходить в чёлку, бросая туда иконку.
+// HARDCODE: заход в чёлку; вынести в конфиг позже.
 const NOTCH_DROP_INSET: f64 = 5.0;
 
 /// Способы переноса по очереди: (пауза между событиями, вести ли через середину).
@@ -52,6 +54,14 @@ static PREFERRED: AtomicUsize = AtomicUsize::new(0);
 
 /// Когда перенос последний раз сделал шаг; `None` — переноса нет.
 static LAST_STEP: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Номер текущего переноса: растёт при каждом запуске и отмене.
+static RUN: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// Номер переноса, который ведёт этот поток.
+    static OWN_RUN: Cell<u64> = const { Cell::new(0) };
+}
 
 /// Чем закончилась попытка перенести одно окно.
 enum Outcome {
@@ -85,25 +95,44 @@ fn last_step() -> std::sync::MutexGuard<'static, Option<Instant>> {
 }
 
 fn mark_step() {
-    *last_step() = Some(Instant::now());
+    if !is_cancelled() {
+        *last_step() = Some(Instant::now());
+    }
+}
+
+/// Отменяет идущий перенос: его поток больше не шлёт событий мыши и не отчитывается.
+pub fn cancel() {
+    RUN.fetch_add(1, Ordering::SeqCst);
+    *last_step() = None;
+}
+
+/// Перенос этого потока отменён или сменён новым.
+fn is_cancelled() -> bool {
+    OWN_RUN.get() != RUN.load(Ordering::SeqCst)
 }
 
 /// Расставляет окна `order` слева направо в этом порядке. `own` — наш разделитель:
 /// неподвижным он не бывает. По окончании зовёт `onLayoutApplied:landed:` у делегата
 /// приложения: спрятала ли чёлка иконку, которую надо было перенести, и встали ли
-/// нарисованные иконки по порядку.
+/// нарисованные иконки по порядку (ни одной не видно — не встали).
 pub fn arrange(order: Vec<u32>, own: u32, notch_edge: Option<f64>) {
-    mark_step();
+    let run = RUN.fetch_add(1, Ordering::SeqCst) + 1;
+    *last_step() = Some(Instant::now());
     thread::spawn(move || {
+        OWN_RUN.set(run);
         let home = CGEvent::location(CGEvent::new(None).as_deref());
         let (mut skipped, mut cramped) = arrange_all(&order, own);
-        if notch_edge.is_some_and(|edge| push_into_notch(&order, edge)) {
+        if notch_edge.is_some_and(|edge| push_into_notch(&order, own, edge)) {
             (skipped, cramped) = arrange_all(&order, own);
+        }
+        if is_cancelled() {
+            crate::log::append("mover: перенос отменён");
+            return;
         }
         post(CGEventType::MouseMoved, home, CGEventFlags::empty());
         CGWarpMouseCursorPosition(home);
         let result = visible_order(&order);
-        let landed = !cramped && result == wanted_of(&order, &result);
+        let landed = !cramped && !result.is_empty() && result == wanted_of(&order, &result);
         if !landed {
             crate::log::append(&format!("mover: порядок не совпал {result:?}, пропущено {skipped:?}"));
         }
@@ -128,6 +157,9 @@ fn arrange_all(order: &[u32], own: u32) -> (Vec<u32>, bool) {
     let mut cramped = false;
     let mut corrections = 0;
     loop {
+        if is_cancelled() {
+            break;
+        }
         wait_until_still();
         let current = visible_order(order);
         let wanted = wanted_of(order, &current);
@@ -189,14 +221,17 @@ fn arrange_all(order: &[u32], own: u32) -> (Vec<u32>, bool) {
 /// Тесная строка: у ≡◂ видны не те окна. Как человек руками, бросаем в чёлку (`edge` — её
 /// правый край) видимое окно, которому по `order` место левее спрятанных, и смотрим, что
 /// вылезло, — пока видимыми не останутся последние окна `order`. Порядок между ними потом
-/// ставит обычный перенос. Возвращает, бросили ли что-то.
-fn push_into_notch(order: &[u32], edge: f64) -> bool {
+/// ставит обычный перенос. Свой разделитель `own` не бросаем. Возвращает, бросили ли что-то.
+fn push_into_notch(order: &[u32], own: u32, edge: f64) -> bool {
     let mut pushed = false;
     for _ in 0..order.len() * 2 {
+        if is_cancelled() {
+            break;
+        }
         wait_until_still();
         let visible = visible_order(order);
         let tail = &order[order.len().saturating_sub(visible.len())..];
-        let Some(&id) = visible.iter().find(|id| !tail.contains(id)) else { break };
+        let Some(&id) = visible.iter().find(|&&id| id != own && !tail.contains(&id)) else { break };
         let layout = crate::capture::icon_layout();
         let Some(item) = layout.iter().find(|window| window.id == id) else { break };
         mark_step();
@@ -360,7 +395,11 @@ pub fn wait_until_still() {
 }
 
 /// Cmd+drag: нажать, (провести через середину,) довести до цели и отпустить.
+/// Отменённый перенос событий не шлёт.
 fn drag(from: CGPoint, to: CGPoint, step: Duration, via_middle: bool) {
+    if is_cancelled() {
+        return;
+    }
     let cmd = CGEventFlags::MaskCommand;
     post(CGEventType::MouseMoved, from, CGEventFlags::empty());
     post(CGEventType::LeftMouseDown, from, cmd);

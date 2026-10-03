@@ -95,6 +95,5 @@ pub fn hiding_width(divider_id: u32) -> f64 {
             "divider: иконок панели слишком много ({panel_width} pt) — часть уйдёт за край"
         ));
     }
-    let width = width.max(MIN_HIDING_WIDTH);
-    width
+    width.max(MIN_HIDING_WIDTH)
 }

@@ -76,6 +76,7 @@ pub struct Settings {
     automatic_layout: Retained<NSSwitch>,
     hint: Retained<NSTextField>,
     permissions: PermissionRows,
+    permissions_stale: Retained<NSTextField>,
     apply_row: Retained<NSStackView>,
     apply: Retained<NSButton>,
     progress: Retained<NSProgressIndicator>,
@@ -85,7 +86,7 @@ pub struct Settings {
 
 impl Settings {
     /// `target` — контроллер: `onToggleShowPanel:`, `onToggleLogin:`, `onOpenAccessibility:`,
-    /// `onOpenScreenRecording:`, `onApplyLayout:`.
+    /// `onOpenScreenRecording:`, `onResetPermissions:`, `onApplyLayout:`.
     pub fn new(mtm: MainThreadMarker, target: &AnyObject, lang: Lang) -> Self {
         let show_panel = switch(mtm, target, sel!(onToggleShowPanel:));
         let login = switch(mtm, target, sel!(onToggleLogin:));
@@ -150,7 +151,20 @@ impl Settings {
             .setActive(true);
 
         let permissions = PermissionRows::new(mtm, target, lang);
-        let access = pane(mtm, &[permissions.view()]);
+        let permissions_stale = wrapping_label(mtm, strings::settings_permissions_stale(lang));
+        permissions_stale.setTextColor(Some(&ui_style::warning_color()));
+        let reset_row = grid(
+            mtm,
+            &[[
+                &*ui_style::title_with_detail(
+                    mtm,
+                    strings::settings_reset_permissions(lang),
+                    strings::settings_reset_permissions_detail(lang),
+                ) as &NSView,
+                &*button(mtm, strings::settings_reset_button(lang), target, sel!(onResetPermissions:)),
+            ]],
+        );
+        let access = pane(mtm, &[permissions.view(), &*permissions_stale, &*reset_row]);
 
         let content = NSView::new(mtm);
         let sidebar = Sidebar::new(mtm, lang, content.clone(), vec![general, layout, access]);
@@ -204,6 +218,7 @@ impl Settings {
             automatic_layout,
             hint,
             permissions,
+            permissions_stale,
             apply_row,
             apply,
             progress,
@@ -260,6 +275,7 @@ impl Settings {
         self.automatic_layout.setEnabled(show_panel() && self.apply.isEnabled());
         self.set_layout_mode(automatic);
         self.permissions.refresh();
+        self.permissions_stale.setHidden(!crate::permissions::look_stale());
     }
 
     /// При автоматическом расположении редактор и «Применить» скрыты: настраивать нечего.
