@@ -41,6 +41,8 @@ const MAX_CORRECTIONS: u32 = 1;
 const DROP_OFFSET: f64 = 2.0;
 /// Вес неподвижной иконки в цепочке: она должна попасть в цепочку при любом раскладе.
 const PINNED_WEIGHT: usize = 1000;
+/// Насколько заходить в чёлку, бросая туда иконку.
+const NOTCH_DROP_INSET: f64 = 5.0;
 
 /// Способы переноса по очереди: (пауза между событиями, вести ли через середину).
 const METHODS: [(Duration, bool); 3] = [(FAST_STEP, false), (FAST_STEP, true), (SAFE_STEP, true)];
@@ -90,17 +92,21 @@ fn mark_step() {
 /// неподвижным он не бывает. По окончании зовёт `onLayoutApplied:landed:` у делегата
 /// приложения: спрятала ли чёлка иконку, которую надо было перенести, и встали ли
 /// нарисованные иконки по порядку.
-pub fn arrange(order: Vec<u32>, own: u32) {
+pub fn arrange(order: Vec<u32>, own: u32, notch_edge: Option<f64>) {
     mark_step();
     thread::spawn(move || {
         let home = CGEvent::location(CGEvent::new(None).as_deref());
-        let (skipped, cramped) = arrange_all(&order, own);
+        let (mut skipped, mut cramped) = arrange_all(&order, own);
+        if notch_edge.is_some_and(|edge| push_into_notch(&order, edge)) {
+            (skipped, cramped) = arrange_all(&order, own);
+        }
         post(CGEventType::MouseMoved, home, CGEventFlags::empty());
         CGWarpMouseCursorPosition(home);
         let result = visible_order(&order);
         let landed = !cramped && result == wanted_of(&order, &result);
-        // TODO: временный лог отладки «Применить» — убрать.
-        crate::log::append(&format!("mover: итог {result:?}, пропущено {skipped:?}, у чёлки={cramped}, встало={landed}"));
+        if !landed {
+            crate::log::append(&format!("mover: порядок не совпал {result:?}, пропущено {skipped:?}"));
+        }
         *last_step() = None;
         DispatchQueue::main().exec_async(move || {
             let mtm = MainThreadMarker::new().expect("main queue");
@@ -178,6 +184,33 @@ fn arrange_all(order: &[u32], own: u32) -> (Vec<u32>, bool) {
         crate::log::append(&format!("mover: окна {pinned:?} не сдвинулись, остальные поставил вокруг"));
     }
     (skipped, cramped || hidden_in_wrong_row(order, own))
+}
+
+/// Тесная строка: у ≡◂ видны не те окна. Как человек руками, бросаем в чёлку (`edge` — её
+/// правый край) видимое окно, которому по `order` место левее спрятанных, и смотрим, что
+/// вылезло, — пока видимыми не останутся последние окна `order`. Порядок между ними потом
+/// ставит обычный перенос. Возвращает, бросили ли что-то.
+fn push_into_notch(order: &[u32], edge: f64) -> bool {
+    let mut pushed = false;
+    for _ in 0..order.len() * 2 {
+        wait_until_still();
+        let visible = visible_order(order);
+        let tail = &order[order.len().saturating_sub(visible.len())..];
+        let Some(&id) = visible.iter().find(|id| !tail.contains(id)) else { break };
+        let layout = crate::capture::icon_layout();
+        let Some(item) = layout.iter().find(|window| window.id == id) else { break };
+        mark_step();
+        let from = CGPoint::new(item.x + item.width / 2.0, item.height / 2.0);
+        let to = CGPoint::new(edge - NOTCH_DROP_INSET, from.y);
+        let (step, via_middle) = METHODS[PREFERRED.load(Ordering::Relaxed)];
+        drag(from, to, step, via_middle);
+        if !settled(id, item.x) {
+            crate::log::append(&format!("mover: окно {id} в чёлку не ушло"));
+            break;
+        }
+        pushed = true;
+    }
+    pushed
 }
 
 /// Окна `order`, которые сейчас нарисованы, слева направо.

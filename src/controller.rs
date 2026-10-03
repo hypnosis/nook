@@ -125,6 +125,8 @@ pub struct ControllerIvars {
     removed_divider: Cell<Option<u32>>,
     /// Мышь отвязана от курсора на время переноса.
     mouse_taken: Cell<bool>,
+    /// Итог переноса (`cramped`, `landed`), пока пересоздаётся разделитель.
+    apply_result: Cell<Option<(bool, bool)>>,
 }
 
 define_class!(
@@ -280,13 +282,6 @@ define_class!(
         /// Порядок в обоих случаях читается заново.
         #[unsafe(method(onToggleAutomaticLayout:))]
         fn on_toggle_automatic_layout(&self, sender: &NSSwitch) {
-            // TODO: временный лог отладки переключателя — убрать.
-            crate::log::append(&format!(
-                "авторасположение: клик, state={} applying={} сохранено={}",
-                sender.state() == NSControlStateValueOn,
-                self.is_applying(),
-                crate::settings::automatic_layout()
-            ));
             if self.is_applying() {
                 return;
             }
@@ -482,11 +477,9 @@ define_class!(
             };
             let order: Vec<u32> =
                 panel_ids.iter().copied().chain([divider_id]).chain(main_ids.iter().copied()).collect();
-            // TODO: временный лог отладки «Применить» — убрать.
-            crate::log::append(&format!("применить: цель {order:?}, разделитель {divider_id}"));
             self.ivars().mouse_taken.set(true);
             crate::mover::take_mouse();
-            crate::mover::arrange(order, divider_id);
+            crate::mover::arrange(order, divider_id, self.notch_right());
             let target: &AnyObject = self.as_ref();
             unsafe {
                 NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
@@ -531,12 +524,48 @@ define_class!(
         #[unsafe(method(onLayoutApplied:landed:))]
         fn on_layout_applied(&self, cramped: bool, landed: bool) {
             self.give_back_mouse();
-            let panel_empty = match self.ivars().settings.borrow().as_ref() {
-                Some(settings) => settings.editor.order().0.is_empty(),
-                None => self.ivars().layout.borrow().panel().is_empty(),
+            let (panel, main) = match self.ivars().settings.borrow().as_ref() {
+                Some(settings) => settings.editor.order(),
+                None => {
+                    let layout = self.ivars().layout.borrow();
+                    (layout.panel().to_vec(), layout.main().to_vec())
+                }
             };
-            self.settle_divider(panel_empty);
-            crate::divider::set_enabled(!panel_empty);
+            if !panel.is_empty() && self.replace_divider(main.first().copied()) {
+                self.ivars().apply_result.set(Some((cramped, landed)));
+                let target: &AnyObject = self.as_ref();
+                unsafe {
+                    NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                        APPLY_SETTLE_DELAY,
+                        target,
+                        sel!(onDividerReplaced:),
+                        None,
+                        false,
+                    );
+                }
+                return;
+            }
+            self.settle_divider(panel.is_empty());
+            crate::divider::set_enabled(!panel.is_empty());
+            self.finish_apply_when_settled(cramped, landed);
+        }
+
+        /// Разделитель пересоздан на месте перед основным рядом — находим его окно и
+        /// заканчиваем «Применить».
+        #[unsafe(method(onDividerReplaced:))]
+        fn on_divider_replaced(&self, _timer: *mut AnyObject) {
+            let known: Vec<u32> = match self.ivars().settings.borrow().as_ref() {
+                Some(settings) => {
+                    let (panel, main) = settings.editor.order();
+                    panel.into_iter().chain(main).collect()
+                }
+                None => Vec::new(),
+            };
+            let found = self.find_divider_window(&known);
+            crate::log::append(&format!("применить: разделитель пересоздан, окно {found:?}"));
+            let (cramped, landed) = self.ivars().apply_result.take().unwrap_or((false, false));
+            self.settle_divider(false);
+            crate::divider::set_enabled(true);
             self.finish_apply_when_settled(cramped, landed);
         }
 
@@ -551,12 +580,6 @@ define_class!(
             self.finish_apply();
             if let (Some(settings), Some((panel, main))) = (self.ivars().settings.borrow().as_ref(), target) {
                 let landed = landed && self.ivars().layout.borrow().matches(&panel, &main);
-                // TODO: временный лог отладки «Применить» — убрать.
-                crate::log::append(&format!(
-                    "применить: совпало={landed} у чёлки={cramped} редактор {panel:?} | {main:?}, строка {:?} | {:?}",
-                    self.ivars().layout.borrow().panel(),
-                    self.ivars().layout.borrow().main()
-                ));
                 let lang = self.ivars().lang;
                 let note = if cramped { strings::editor_cramped(lang) } else { strings::editor_not_landed(lang) };
                 settings.set_apply_note((!landed).then_some(note));
@@ -691,13 +714,8 @@ define_class!(
             let in_strip = auto_collapse::mouse_in_menu_bar_strip(self.mtm());
             let in_panel = self.mouse_in_panel();
             if in_strip || in_panel {
-                // TODO: временный лог отладки автоскрытия — убрать.
-                if self.ivars().collapse_timer.borrow().is_some() {
-                    crate::log::append(&format!("автоскрытие: погашено, strip={in_strip} panel={in_panel}"));
-                }
                 self.cancel_collapse_timer();
             } else if self.ivars().collapse_timer.borrow().is_none() {
-                crate::log::append("автоскрытие: взведено");
                 self.arm_collapse_timer();
             }
         }
@@ -790,8 +808,6 @@ define_class!(
         /// шторка не осталась поверх чужого экрана.
         #[unsafe(method(onSpaceChanged:))]
         fn on_space_changed(&self, _notification: &NSNotification) {
-            // TODO: временный лог отладки мигания панели — убрать.
-            crate::log::append(&format!("рабочий стол сменился, узкий режим={}", crate::reveal::is_on()));
             if !self.ivars().hidden.get() && crate::reveal::is_on() {
                 self.toggle();
             }
@@ -802,13 +818,6 @@ define_class!(
         #[unsafe(method(onAutoCollapse:))]
         fn on_auto_collapse(&self, _timer: *mut AnyObject) {
             self.ivars().collapse_timer.borrow_mut().take();
-            // TODO: временный лог отладки автоскрытия — убрать.
-            crate::log::append(&format!(
-                "автоскрытие: сработало, hidden={} applying={} menu_open={}",
-                self.ivars().hidden.get(),
-                self.is_applying(),
-                crate::reveal::menu_open()
-            ));
             if self.ivars().hidden.get() || self.is_applying() || crate::reveal::menu_open() {
                 return;
             }
@@ -841,6 +850,7 @@ impl Controller {
             divider_window: Cell::new(None),
             removed_divider: Cell::new(None),
             mouse_taken: Cell::new(false),
+            apply_result: Cell::new(None),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -898,8 +908,6 @@ impl Controller {
         };
 
         let going_to_hide = !self.ivars().hidden.get();
-        // TODO: временный лог отладки мигания панели — убрать.
-        crate::log::append(&format!("toggle: {}", if going_to_hide { "прячу" } else { "показываю" }));
 
         // GUARD: прячем только если спейсер реально левее якоря.
         if going_to_hide && !self.spacer_is_left_of_anchor(items) {
@@ -1148,6 +1156,41 @@ impl Controller {
         }
     }
 
+    /// Ставит разделитель без мыши: убирает его и создаёт заново правым краем вплотную к
+    /// первой иконке основного ряда `first_main` (нет её — к ≡◂). Иконка должна быть видна:
+    /// у спрятанной координата не настоящая. Уже стоит на месте — не трогает.
+    /// Возвращает, пересоздан ли разделитель.
+    fn replace_divider(&self, first_main: Option<u32>) -> bool {
+        let mtm = self.mtm();
+        let layout = crate::capture::icon_layout();
+        let (spacer_x, screen_width) = {
+            let items = self.ivars().items.borrow();
+            let Some(items) = items.as_ref() else { return false };
+            let Some(screen) = items.spacer.button(mtm).and_then(|b| b.window()).and_then(|w| w.screen()) else {
+                return false;
+            };
+            (status_bar::item_origin_x(&items.spacer, mtm), screen.frame().size.width)
+        };
+        let edge = match first_main {
+            Some(id) => layout.iter().find(|window| window.id == id && window.onscreen).map(|window| window.x),
+            None => spacer_x,
+        };
+        let Some(edge) = edge else { return false };
+        let in_place = self.ivars().divider_window.get().is_some_and(|id| {
+            layout.iter().any(|window| {
+                window.id == id && window.onscreen && (window.x + window.width - edge).abs() < crate::capture::POSITION_TOLERANCE
+            })
+        });
+        if in_place {
+            return false;
+        }
+        crate::log::append(&format!("применить: ставлю разделитель правым краем на {edge}"));
+        self.remove_divider();
+        crate::divider::set_place(edge, screen_width);
+        *self.ivars().divider.borrow_mut() = Some(crate::divider::create(mtm));
+        true
+    }
+
     /// Убирает разделитель из строки; его место macOS помнит по autosave.
     fn remove_divider(&self) {
         if let Some(divider) = self.ivars().divider.borrow_mut().take() {
@@ -1161,8 +1204,6 @@ impl Controller {
     /// Сбрасывает порядок и читает его заново: открытая панель переснимается, открытый
     /// редактор тоже. Свёрнутую строку снимет следующее раскрытие.
     fn reindex_panel(&self) {
-        // TODO: временный лог отладки мигания панели — убрать.
-        crate::log::append("reindex_panel");
         *self.ivars().layout.borrow_mut() = Layout::default();
         if self.layout_shown() && !crate::settings::automatic_layout() {
             let _: () = unsafe { msg_send![self, onEditorNeedsIcons] };
@@ -1240,6 +1281,13 @@ impl Controller {
                 }
             });
         });
+    }
+
+    /// Правый край чёлки в координатах CG; без чёлки — None.
+    fn notch_right(&self) -> Option<f64> {
+        let items = self.ivars().items.borrow();
+        let screen = items.as_ref()?.spacer.button(self.mtm())?.window()?.screen()?;
+        Some(screen.auxiliaryTopRightArea().origin.x).filter(|x| *x > 0.0)
     }
 
     /// Участок строки меню от правого края чёлки до ≡◂, в координатах CG: только здесь

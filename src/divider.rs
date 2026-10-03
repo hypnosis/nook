@@ -25,6 +25,8 @@ const MIN_HIDING_WIDTH: f64 = 500.0;
 /// Окно узкого разделителя не шире этого. Виден он может и не быть: при длинном
 /// основном ряде он стоит под чёлкой.
 const NARROW_WINDOW_MAX: f64 = 40.0;
+/// Сохранённый macOS отступ больше расстояния до правого края окна на столько.
+const POSITION_SLACK: f64 = 2.0;
 
 /// Разделитель с окном `window` узкий: иконки левее него стоят в строке по порядку.
 pub fn is_narrow(window: &IconWindow) -> bool {
@@ -55,6 +57,13 @@ pub fn create(mtm: MainThreadMarker) -> Retained<NSStatusItem> {
 
 pub fn remove(item: &NSStatusItem) {
     NSStatusBar::systemStatusBar().removeStatusItem(item);
+}
+
+/// Место, куда macOS поставит следующий созданный разделитель: правым краем на `right_edge`
+/// (координаты экрана шириной `screen_width`). macOS хранит место как отступ от правого края.
+pub fn set_place(right_edge: f64, screen_width: f64) {
+    let key = NSString::from_str(&format!("NSStatusItem Preferred Position {AUTOSAVE}"));
+    NSUserDefaults::standardUserDefaults().setDouble_forKey(screen_width - right_edge + POSITION_SLACK, &key);
 }
 
 /// Ширина, при которой разделитель (окно `divider_id`) прячет иконки левее себя,
