@@ -57,16 +57,6 @@ pub fn remove(item: &NSStatusItem) {
     NSStatusBar::systemStatusBar().removeStatusItem(item);
 }
 
-/// Левее узкого разделителя (окно `divider_id`) стоят иконки — панель не пуста.
-/// Окна разделителя нет в строке — считаем, что стоят.
-pub fn has_icons_left(divider_id: u32) -> bool {
-    let layout = crate::capture::icon_layout();
-    let Some(divider_x) = layout.iter().find(|window| window.id == divider_id).map(|window| window.x) else {
-        return true;
-    };
-    layout.iter().any(|window| crate::capture::is_panel_icon(window, divider_x))
-}
-
 /// Ширина, при которой разделитель (окно `divider_id`) прячет иконки левее себя,
 /// а самая левая из них остаётся на экране.
 pub fn hiding_width(divider_id: u32) -> f64 {

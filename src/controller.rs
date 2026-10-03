@@ -121,6 +121,8 @@ pub struct ControllerIvars {
     apply_waits: Cell<u32>,
     /// Номер окна разделителя у WindowServer.
     divider_window: Cell<Option<u32>>,
+    /// Окно убранного разделителя: ещё может стоять в строке, в порядок не входит.
+    removed_divider: Cell<Option<u32>>,
     /// Мышь отвязана от курсора на время переноса.
     mouse_taken: Cell<bool>,
 }
@@ -278,6 +280,13 @@ define_class!(
         /// Порядок в обоих случаях читается заново.
         #[unsafe(method(onToggleAutomaticLayout:))]
         fn on_toggle_automatic_layout(&self, sender: &NSSwitch) {
+            // TODO: временный лог отладки переключателя — убрать.
+            crate::log::append(&format!(
+                "авторасположение: клик, state={} applying={} сохранено={}",
+                sender.state() == NSControlStateValueOn,
+                self.is_applying(),
+                crate::settings::automatic_layout()
+            ));
             if self.is_applying() {
                 return;
             }
@@ -515,14 +524,17 @@ define_class!(
             }
         }
 
-        /// Перестановка закончена. Пока разделитель узкий, видно, остались ли иконки панели:
-        /// пустой панели разделитель не нужен, иначе он снова широкий и прячет её.
+        /// Перестановка закончена. Пустой панели в редакторе разделитель не нужен, иначе он
+        /// снова широкий и прячет её.
         /// `cramped` — иконку, которую надо было сдвинуть, спрятала чёлка; `landed` — видимые
         /// иконки встали в нужном порядке.
         #[unsafe(method(onLayoutApplied:landed:))]
         fn on_layout_applied(&self, cramped: bool, landed: bool) {
             self.give_back_mouse();
-            let panel_empty = !self.ivars().divider_window.get().is_some_and(crate::divider::has_icons_left);
+            let panel_empty = match self.ivars().settings.borrow().as_ref() {
+                Some(settings) => settings.editor.order().0.is_empty(),
+                None => self.ivars().layout.borrow().panel().is_empty(),
+            };
             self.settle_divider(panel_empty);
             crate::divider::set_enabled(!panel_empty);
             self.finish_apply_when_settled(cramped, landed);
@@ -827,6 +839,7 @@ impl Controller {
             layout: RefCell::new(Layout::default()),
             apply_waits: Cell::new(0),
             divider_window: Cell::new(None),
+            removed_divider: Cell::new(None),
             mouse_taken: Cell::new(false),
         });
         unsafe { msg_send![super(this), init] }
@@ -974,7 +987,8 @@ impl Controller {
         // Сразу после раскрытия AppKit ещё отдаёт место ≡◂ из спрятанного состояния — за краем экрана.
         let Some(spacer_x) = spacer_x.filter(|x| *x > 0.0) else { return false };
         let automatic = crate::settings::automatic_layout();
-        self.ivars().layout.borrow_mut().refresh(divider, spacer_x, automatic)
+        let removed = self.ivars().removed_divider.get();
+        self.ivars().layout.borrow_mut().refresh(divider, removed, spacer_x, automatic)
     }
 
     fn is_applying(&self) -> bool {
@@ -1139,7 +1153,9 @@ impl Controller {
         if let Some(divider) = self.ivars().divider.borrow_mut().take() {
             crate::divider::remove(&divider);
         }
-        self.ivars().divider_window.set(None);
+        if let Some(id) = self.ivars().divider_window.take() {
+            self.ivars().removed_divider.set(Some(id));
+        }
     }
 
     /// Сбрасывает порядок и читает его заново: открытая панель переснимается, открытый

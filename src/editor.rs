@@ -85,7 +85,7 @@ define_class!(
             let local = self.convertPoint_fromView(point, superview.as_deref());
             let size = self.bounds().size;
             let inside = local.x >= 0.0 && local.y >= 0.0 && local.x <= size.width && local.y <= size.height;
-            inside.then(|| Retained::into_super(self.retain()))
+            (inside && !self.isHidden()).then(|| Retained::into_super(self.retain()))
         }
 
         #[unsafe(method(mouseDown:))]

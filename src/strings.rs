@@ -189,8 +189,8 @@ pub fn editor_applying(lang: Lang) -> &'static str {
 
 pub fn editor_cramped(lang: Lang) -> &'static str {
     match lang {
-        Lang::En => "Not everything moved: there isn't enough room next to the notch. Move a few icons from the main row to the panel and apply again.",
-        Lang::Ru => "Не всё встало на место: у чёлки не хватает места. Уберите часть иконок из основного ряда в панель и примените ещё раз.",
+        Lang::En => "Some icons are too close to the edge of the visible area and won't be shown. Move them to the panel or turn on Automatic layout.",
+        Lang::Ru => "Часть иконок стоит слишком близко к краю видимой области и не будет видна. Перенесите их в панель или включите «Автоматическое расположение».",
     }
 }
 

@@ -45,14 +45,16 @@ impl Layout {
         self.panel.iter().filter(wanted).eq(panel) && self.main.iter().filter(wanted).eq(main)
     }
 
-    /// Сверяет порядок со строкой меню: известные иконки сохраняют своё место, новые встают
-    /// в конец своего ряда, пропавшие убираются, сменившие ряд переходят в конец нового.
-    /// Порядок пуст — берётся как стоит. `divider` — окно разделителя панели (None — его нет),
-    /// `spacer_x` — левый край ≡◂. Широкий разделитель прячет иконки панели, основной ряд
-    /// остаётся виден; при узком панель — всё левее него. `automatic` — разделителя нет,
-    /// и панель — всё, что macOS не уместила в строку. Окна разделителя нет, узкий спрятан
-    /// или левее ≡◂ ничего не нашлось — строка не прочитана. Возвращает, прочитана ли она.
-    pub fn refresh(&mut self, divider: Option<u32>, spacer_x: f64, automatic: bool) -> bool {
+    /// Сверяет порядок со строкой меню: известные иконки остаются в своём ряду и на своём
+    /// месте (при `automatic` ряд — где стоит), новые встают в конец ряда, где стоят,
+    /// пропавшие убираются. Порядок пуст —
+    /// берётся как стоит. `divider` — окно разделителя панели (None — его нет), `ignore` —
+    /// окно убранного разделителя, которое ещё не исчезло; `spacer_x` — левый край ≡◂.
+    /// Широкий разделитель прячет иконки панели, основной ряд остаётся виден; при узком
+    /// панель — всё левее него. `automatic` — разделителя нет, и панель — всё, что macOS
+    /// не уместила в строку. Окна разделителя нет, узкий спрятан или левее ≡◂ ничего
+    /// не нашлось — строка не прочитана. Возвращает, прочитана ли она.
+    pub fn refresh(&mut self, divider: Option<u32>, ignore: Option<u32>, spacer_x: f64, automatic: bool) -> bool {
         if self.applying {
             return false;
         }
@@ -72,7 +74,9 @@ impl Layout {
         let mut main = Vec::new();
         for window in windows
             .iter()
-            .filter(|window| window.x < spacer_x - POSITION_TOLERANCE && Some(window.id) != divider)
+            .filter(|window| {
+                window.x < spacer_x - POSITION_TOLERANCE && Some(window.id) != divider && Some(window.id) != ignore
+            })
         {
             let in_panel = match narrow_x {
                 Some(x) => capture::is_panel_icon(window, x),
@@ -87,8 +91,20 @@ impl Layout {
         if panel.is_empty() && main.is_empty() {
             return false;
         }
-        let panel = keep_order(&self.panel, panel);
-        let main = keep_order(&self.main, main);
+        let (panel, main) = if automatic {
+            // Набор панели решает macOS: иконка переходит в тот ряд, где стоит.
+            (
+                keep_order(&self.panel, &panel.clone(), &self.panel, panel),
+                keep_order(&self.main, &main.clone(), &self.main, main),
+            )
+        } else {
+            let present: Vec<u32> = panel.iter().chain(&main).copied().collect();
+            let known: Vec<u32> = self.panel.iter().chain(&self.main).copied().collect();
+            (
+                keep_order(&self.panel, &present, &known, panel),
+                keep_order(&self.main, &present, &known, main),
+            )
+        };
         self.update(panel, main);
         true
     }
@@ -102,9 +118,10 @@ impl Layout {
     }
 }
 
-/// Иконки ряда `present` в порядке `known`; которых в `known` нет — в конце, как стоят.
-fn keep_order(known: &[u32], present: Vec<u32>) -> Vec<u32> {
-    let mut row: Vec<u32> = known.iter().filter(|id| present.contains(id)).copied().collect();
-    row.extend(present.into_iter().filter(|id| !known.contains(id)));
-    row
+/// Ряд реестра `row` без пропавших из строки (`present`), плюс новые иконки, которые
+/// стоят в этом ряду (`standing`) и реестру ещё не известны (`known`).
+fn keep_order(row: &[u32], present: &[u32], known: &[u32], standing: Vec<u32>) -> Vec<u32> {
+    let mut kept: Vec<u32> = row.iter().filter(|id| present.contains(id)).copied().collect();
+    kept.extend(standing.into_iter().filter(|id| !known.contains(id)));
+    kept
 }
