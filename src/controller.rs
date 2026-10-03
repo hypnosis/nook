@@ -125,6 +125,9 @@ pub struct ControllerIvars {
     mouse_taken: Cell<bool>,
     /// Итог переноса (`cramped`, `landed`), пока пересоздаётся разделитель.
     apply_result: Cell<Option<(bool, bool)>>,
+    /// Ручное расположение только что вернулось: как только редактор покажет ручной
+    /// порядок, он сам применяется к строке.
+    apply_when_editor_ready: Cell<bool>,
 }
 
 define_class!(
@@ -276,8 +279,8 @@ define_class!(
         }
 
         /// Переключатель «Автоматическое расположение»: включён — разделителя нет и панель
-        /// показывает всё, что не поместилось; выключен — разделитель возвращается на своё место
-        /// и возвращается ручной порядок.
+        /// показывает всё, что не поместилось; выключен — разделитель возвращается на своё место,
+        /// возвращается ручной порядок и сразу применяется к строке.
         #[unsafe(method(onToggleAutomaticLayout:))]
         fn on_toggle_automatic_layout(&self, sender: &NSSwitch) {
             if self.is_applying() {
@@ -288,6 +291,7 @@ define_class!(
             if let Some(settings) = self.ivars().settings.borrow().as_ref() {
                 settings.refresh();
             }
+            self.ivars().apply_when_editor_ready.set(!automatic);
             if automatic {
                 self.ivars().layout.borrow_mut().enter_automatic();
                 self.stop_editor_refresh();
@@ -398,15 +402,22 @@ define_class!(
 
         /// Картинки для редактора готовы — он выстраивает их по порядку.
         /// Пока иконку тянут или порядок применяется, редактор не трогаем.
+        /// Ждали возврата ручного расположения — теперь редактор его показывает, применяем.
         #[unsafe(method(setEditorIcons:ids:))]
         fn set_editor_icons(&self, images: &NSArray<NSImage>, ids: &NSArray<NSNumber>) {
             let dragging = self.ivars().settings.borrow().as_ref().is_some_and(|settings| settings.editor.is_dragging());
             if dragging || self.is_applying() {
                 return;
             }
-            let layout = self.ivars().layout.borrow();
-            if let Some(settings) = self.ivars().settings.borrow().as_ref() {
-                settings.editor.set_icons(images, ids, layout.panel(), layout.main());
+            {
+                let layout = self.ivars().layout.borrow();
+                if let Some(settings) = self.ivars().settings.borrow().as_ref() {
+                    settings.editor.set_icons(images, ids, layout.panel(), layout.main());
+                }
+            }
+            if self.ivars().apply_when_editor_ready.replace(false) {
+                crate::log::append("ручное расположение вернулось — применяю");
+                let _: () = unsafe { msg_send![self, onApplyLayout: std::ptr::null_mut::<AnyObject>()] };
             }
         }
 
@@ -884,6 +895,7 @@ impl Controller {
             removed_divider: Cell::new(None),
             mouse_taken: Cell::new(false),
             apply_result: Cell::new(None),
+            apply_when_editor_ready: Cell::new(false),
         });
         unsafe { msg_send![super(this), init] }
     }
