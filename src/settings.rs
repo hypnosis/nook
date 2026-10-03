@@ -25,6 +25,7 @@ use crate::strings::{self, Lang};
 use crate::ui_style::{self, button, grid, label, wrapping_label, SPACING};
 
 const SHOW_PANEL_KEY: &str = "showPanel";
+const AUTOMATIC_LAYOUT_KEY: &str = "automaticLayout";
 const LAYOUT_PANE: usize = 1;
 
 // HARDCODE: размеры окна настроек; вынести в конфиг позже.
@@ -56,13 +57,26 @@ pub fn set_show_panel(on: bool) {
     NSUserDefaults::standardUserDefaults().setBool_forKey(on, &NSString::from_str(SHOW_PANEL_KEY));
 }
 
+/// Панель показывает всё, что не поместилось в строку меню, без ручной раскладки (по умолчанию нет).
+pub fn automatic_layout() -> bool {
+    NSUserDefaults::standardUserDefaults().boolForKey(&NSString::from_str(AUTOMATIC_LAYOUT_KEY))
+}
+
+pub fn set_automatic_layout(on: bool) {
+    NSUserDefaults::standardUserDefaults()
+        .setBool_forKey(on, &NSString::from_str(AUTOMATIC_LAYOUT_KEY));
+}
+
 pub struct Settings {
     window: Retained<NSWindow>,
     sidebar: Retained<Sidebar>,
     pub editor: Retained<EditorView>,
     show_panel: Retained<NSSwitch>,
     login: Retained<NSSwitch>,
+    automatic_layout: Retained<NSSwitch>,
+    hint: Retained<NSTextField>,
     permissions: PermissionRows,
+    apply_row: Retained<NSStackView>,
     apply: Retained<NSButton>,
     progress: Retained<NSProgressIndicator>,
     progress_label: Retained<NSTextField>,
@@ -89,6 +103,18 @@ impl Settings {
             )],
         );
 
+        let automatic_layout = switch(mtm, target, sel!(onToggleAutomaticLayout:));
+        let automatic_row = grid(
+            mtm,
+            &[[
+                &*ui_style::title_with_detail(
+                    mtm,
+                    strings::settings_automatic_layout(lang),
+                    strings::settings_automatic_layout_detail(lang),
+                ) as &NSView,
+                &*automatic_layout,
+            ]],
+        );
         let hint = wrapping_label(mtm, strings::editor_hint(lang));
         hint.setTextColor(Some(&ui_style::secondary_label_color()));
         let editor = EditorView::new(mtm, lang, EDITOR_WIDTH);
@@ -114,7 +140,10 @@ impl Settings {
         let apply_note = wrapping_label(mtm, "");
         apply_note.setTextColor(Some(&ui_style::secondary_label_color()));
         apply_note.setHidden(true);
-        let layout = pane(mtm, &[&*hint as &NSView, &*editor, &*apply_row, &*apply_note]);
+        let layout = pane(
+            mtm,
+            &[&*automatic_row as &NSView, &*hint, &*editor, &*apply_row, &*apply_note],
+        );
         editor
             .trailingAnchor()
             .constraintEqualToAnchor_constant(&layout.trailingAnchor(), -CONTENT_INSET)
@@ -172,7 +201,10 @@ impl Settings {
             editor,
             show_panel,
             login,
+            automatic_layout,
+            hint,
             permissions,
+            apply_row,
             apply,
             progress,
             progress_label,
@@ -186,6 +218,7 @@ impl Settings {
             self.set_apply_note(None);
         }
         self.apply.setEnabled(!applying);
+        self.automatic_layout.setEnabled(!applying && show_panel());
         self.progress_label.setHidden(!applying);
         unsafe {
             if applying {
@@ -221,7 +254,22 @@ impl Settings {
     pub fn refresh(&self) {
         set_switch(&self.show_panel, show_panel());
         set_switch(&self.login, crate::login::is_enabled());
+        let automatic = automatic_layout();
+        set_switch(&self.automatic_layout, automatic);
+        // Кнопка «Применить» недоступна только на время переноса иконок.
+        self.automatic_layout.setEnabled(show_panel() && self.apply.isEnabled());
+        self.set_layout_mode(automatic);
         self.permissions.refresh();
+    }
+
+    /// При автоматическом расположении редактор и «Применить» скрыты: настраивать нечего.
+    fn set_layout_mode(&self, automatic: bool) {
+        self.hint.setHidden(automatic);
+        self.editor.setHidden(automatic);
+        self.apply_row.setHidden(automatic);
+        if automatic {
+            self.set_apply_note(None);
+        }
     }
 }
 

@@ -144,6 +144,20 @@ pub fn settings_show_panel(lang: Lang) -> &'static str {
     }
 }
 
+pub fn settings_automatic_layout(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Automatic layout",
+        Lang::Ru => "Автоматическое расположение",
+    }
+}
+
+pub fn settings_automatic_layout_detail(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "The panel shows icons that don't fit in the menu bar.",
+        Lang::Ru => "В панели отображаются иконки, которым не хватило места в строке меню.",
+    }
+}
+
 /// Ряды редактора.
 pub fn editor_main(lang: Lang) -> &'static str {
     match lang {

@@ -3,8 +3,9 @@
 //! Переносим как можно меньше: самая длинная цепочка элементов, которые уже стоят
 //! в нужном порядке друг относительно друга, остаётся на месте, двигаются только
 //! остальные. Иконки, которые не принимают поддельный перенос, остаются на месте,
-//! а остальные расставляются вокруг них. На время переноса курсор спрятан,
-//! а физическая мышь отвязана от него.
+//! а остальные расставляются вокруг них. Спрятанные у чёлки иконки мышью не взять, и стоят
+//! они не на своём месте, поэтому в расчёт идут только нарисованные. На время переноса
+//! курсор спрятан, а физическая мышь отвязана от него.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -47,9 +48,6 @@ const METHODS: [(Duration, bool); 3] = [(FAST_STEP, false), (FAST_STEP, true), (
 /// Способ, сработавший последним, — с него и начинаем.
 static PREFERRED: AtomicUsize = AtomicUsize::new(0);
 
-/// Окна, которые подтверждённо не принимают поддельный перенос; до перезапуска.
-static IMMOVABLE: Mutex<Option<HashSet<u32>>> = Mutex::new(None);
-
 /// Когда перенос последний раз сделал шаг; `None` — переноса нет.
 static LAST_STEP: Mutex<Option<Instant>> = Mutex::new(None);
 
@@ -89,8 +87,9 @@ fn mark_step() {
 }
 
 /// Расставляет окна `order` слева направо в этом порядке. `own` — наш разделитель:
-/// неподвижным он не бывает. По окончании зовёт `onLayoutApplied:` у делегата приложения
-/// с признаком, что иконку, которую надо было сдвинуть, спрятала чёлка.
+/// неподвижным он не бывает. По окончании зовёт `onLayoutApplied:landed:` у делегата
+/// приложения: спрятала ли чёлка иконку, которую надо было перенести, и встали ли
+/// нарисованные иконки по порядку.
 pub fn arrange(order: Vec<u32>, own: u32) {
     mark_step();
     thread::spawn(move || {
@@ -98,38 +97,35 @@ pub fn arrange(order: Vec<u32>, own: u32) {
         let (skipped, cramped) = arrange_all(&order, own);
         post(CGEventType::MouseMoved, home, CGEventFlags::empty());
         CGWarpMouseCursorPosition(home);
-        let result: Vec<u32> = current_order(&order).iter().map(|window| window.id).collect();
-        if result != order {
-            crate::log::append(&format!("mover: порядок не совпал {result:?}, пропущено {skipped:?}"));
-        }
+        let result = visible_order(&order);
+        let landed = !cramped && result == wanted_of(&order, &result);
+        // TODO: временный лог отладки «Применить» — убрать.
+        crate::log::append(&format!("mover: итог {result:?}, пропущено {skipped:?}, у чёлки={cramped}, встало={landed}"));
         *last_step() = None;
         DispatchQueue::main().exec_async(move || {
             let mtm = MainThreadMarker::new().expect("main queue");
             if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
                 let delegate: &AnyObject = delegate.as_ref();
-                let _: () = unsafe { msg_send![delegate, onLayoutApplied: cramped] };
+                let _: () = unsafe { msg_send![delegate, onLayoutApplied: cramped, landed: landed] };
             }
         });
     });
 }
 
-/// Переносит элементы вне цепочки. Окно, которое не сдвинулось, становится
-/// подозреваемым: план пересчитывается так, чтобы оно стояло на месте. Неподвижным
-/// подозреваемый признаётся, только если в этом же применении сдвинулось другое окно.
+/// Переносит нарисованные окна вне цепочки. Окно, которое не сдвинулось, до конца этого
+/// применения стоит на месте: план пересчитывается, остальные ставятся вокруг него.
 /// Если после прохода порядок всё же не совпал, делается добивочный проход.
-/// Возвращает пропущенные окна и признак, что среди них были спрятанные чёлкой.
+/// Возвращает пропущенные окна и признак, что иконку не перенести из-за чёлки.
 fn arrange_all(order: &[u32], own: u32) -> (Vec<u32>, bool) {
-    let known = immovable();
-    let mut suspects: HashSet<u32> = HashSet::new();
-    let mut moved = 0;
+    let mut pinned: HashSet<u32> = HashSet::new();
     let mut skipped = Vec::new();
     let mut cramped = false;
     let mut corrections = 0;
     loop {
         wait_until_still();
-        let pinned: HashSet<u32> = known.union(&suspects).copied().collect();
-        let current: Vec<u32> = current_order(order).iter().map(|window| window.id).collect();
-        let stable = stable_chain(order, &current, &pinned);
+        let current = visible_order(order);
+        let wanted = wanted_of(order, &current);
+        let stable = stable_chain(&wanted, &current, &pinned);
         if stable.len() == current.len() {
             break;
         }
@@ -140,7 +136,7 @@ fn arrange_all(order: &[u32], own: u32) -> (Vec<u32>, bool) {
         let mut replan = false;
         let mut moved_now = 0;
         skipped.clear();
-        for (place, &id) in order.iter().enumerate() {
+        for (place, &id) in wanted.iter().enumerate() {
             if stable.contains(&id) {
                 continue;
             }
@@ -148,25 +144,24 @@ fn arrange_all(order: &[u32], own: u32) -> (Vec<u32>, bool) {
                 skipped.push(id);
                 continue;
             }
-            let before = order[place + 1..].iter().find(|next| stable.contains(next)).copied();
-            let after = order[..place].iter().rev().find(|previous| placed.contains(previous)).copied();
+            let before = wanted[place + 1..].iter().find(|next| stable.contains(next)).copied();
+            let after = wanted[..place].iter().rev().find(|previous| placed.contains(previous)).copied();
             match move_next_to(id, before, after, moved_now > 0) {
                 Outcome::Moved => moved_now += 1,
                 Outcome::Hidden => {
                     cramped = true;
                     skipped.push(id);
                 }
-                Outcome::Skipped => skipped.push(id),
+                Outcome::Skipped => {}
                 Outcome::Stuck if id == own => skipped.push(id),
                 Outcome::Stuck => {
-                    suspects.insert(id);
+                    pinned.insert(id);
                     replan = true;
                     break;
                 }
             }
             placed.push(id);
         }
-        moved += moved_now;
         if replan {
             continue;
         }
@@ -179,29 +174,36 @@ fn arrange_all(order: &[u32], own: u32) -> (Vec<u32>, bool) {
         }
         corrections += 1;
     }
-    confirm_immovable(&suspects, moved);
-    (skipped, cramped)
+    if !pinned.is_empty() {
+        crate::log::append(&format!("mover: окна {pinned:?} не сдвинулись, остальные поставил вокруг"));
+    }
+    (skipped, cramped || hidden_in_wrong_row(order, own))
 }
 
-/// Подозреваемые становятся неподвижными, только если перенос в целом работает.
-fn confirm_immovable(suspects: &HashSet<u32>, moved: usize) {
-    if suspects.is_empty() {
-        return;
-    }
-    if moved == 0 {
-        crate::log::append(&format!(
-            "mover: не сдвинулось ничего — {suspects:?} неподвижными не считаю"
-        ));
-        return;
-    }
-    let mut guard = IMMOVABLE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    guard.get_or_insert_with(HashSet::new).extend(suspects);
-    crate::log::append(&format!("mover: окна {suspects:?} неподвижны, ставлю остальные вокруг"));
+/// Окна `order`, которые сейчас нарисованы, слева направо.
+fn visible_order(order: &[u32]) -> Vec<u32> {
+    current_order(order).iter().filter(|window| window.onscreen).map(|window| window.id).collect()
 }
 
-fn immovable() -> HashSet<u32> {
-    let guard = IMMOVABLE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    guard.clone().unwrap_or_default()
+/// Окна `order`, которые есть среди `present`, в порядке `order`.
+fn wanted_of(order: &[u32], present: &[u32]) -> Vec<u32> {
+    order.iter().filter(|id| present.contains(id)).copied().collect()
+}
+
+/// Спрятанная у чёлки иконка стоит не по ту сторону разделителя `own`, что в `order`:
+/// мышью её туда не перенести.
+fn hidden_in_wrong_row(order: &[u32], own: u32) -> bool {
+    let layout = crate::capture::icon_layout();
+    let Some(divider_x) = layout.iter().find(|window| window.id == own).map(|window| window.x) else {
+        return false;
+    };
+    let own_place = order.iter().position(|&id| id == own).unwrap_or(order.len());
+    layout.iter().filter(|window| !window.onscreen).any(|window| {
+        order
+            .iter()
+            .position(|&id| id == window.id)
+            .is_some_and(|place| (window.x < divider_x) != (place < own_place))
+    })
 }
 
 /// Самая тяжёлая подпоследовательность `current`, которая уже идёт в порядке `order`.
@@ -241,7 +243,7 @@ fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>, after_move: bo
     }
     let layout = crate::capture::icon_layout();
     let Some(item) = layout.iter().find(|window| window.id == id) else { return Outcome::Skipped };
-    let others: Vec<&IconWindow> = layout.iter().filter(|window| window.id != id).collect();
+    let others: Vec<&IconWindow> = layout.iter().filter(|window| window.id != id && window.onscreen).collect();
     let position = |wanted: u32| others.iter().position(|window| window.id == wanted);
     let (left, right) = match (before.and_then(position), after.and_then(position)) {
         (Some(next), _) => (next.checked_sub(1).map(|i| others[i]), Some(others[next])),

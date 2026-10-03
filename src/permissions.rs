@@ -10,7 +10,8 @@ use objc2_app_kit::{
 };
 use objc2_application_services::AXIsProcessTrusted;
 use objc2_core_graphics::CGPreflightScreenCaptureAccess;
-use objc2_foundation::{NSArray, NSString, NSURL};
+use objc2_foundation::{NSArray, NSString, NSURL, NSUserDefaults};
+use std::process::Command;
 
 use crate::strings::{self, Lang};
 use crate::ui_style;
@@ -19,9 +20,10 @@ const ACCESSIBILITY_PANE: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 const SCREEN_RECORDING_PANE: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
-/// Зазор между названием разрешения и пояснением под ним.
-// HARDCODE: зазор строки разрешения; вынести в конфиг позже.
-const DETAIL_GAP: f64 = 2.0;
+const GRANTED_VERSION_KEY: &str = "permissionsGrantedVersion";
+const TCCUTIL: &str = "/usr/bin/tccutil";
+/// Совпадает с CFBundleIdentifier в Info.plist.
+const BUNDLE_ID: &str = "com.hypnosis.nook";
 
 #[derive(Clone, Copy)]
 enum Permission {
@@ -36,6 +38,14 @@ impl Permission {
         match self {
             Self::ScreenRecording => CGPreflightScreenCaptureAccess(),
             Self::Accessibility => unsafe { AXIsProcessTrusted() },
+        }
+    }
+
+    /// Имя службы для `tccutil`.
+    fn tcc_service(self) -> &'static str {
+        match self {
+            Self::ScreenRecording => "ScreenCapture",
+            Self::Accessibility => "Accessibility",
         }
     }
 
@@ -64,6 +74,41 @@ impl Permission {
 
 pub fn all_granted() -> bool {
     ALL.iter().all(|permission| permission.is_granted())
+}
+
+/// Все разрешения есть — запоминает версию Nook, которой они выданы.
+pub fn remember_if_granted() {
+    if !all_granted() {
+        return;
+    }
+    let version = NSString::from_str(env!("CARGO_PKG_VERSION"));
+    // SAFETY: строка — допустимое значение для NSUserDefaults.
+    unsafe {
+        NSUserDefaults::standardUserDefaults()
+            .setObject_forKey(Some(&version), &NSString::from_str(GRANTED_VERSION_KEY));
+    }
+}
+
+/// Разрешения выдавали прошлой версии, а у этой их нет: записи в Системных настройках
+/// остались от прежней подписи и включены впустую. Убирает их, чтобы macOS спросила заново.
+/// Возвращает, был ли сброс.
+pub fn reset_stale_after_update() -> bool {
+    let granted_version = NSUserDefaults::standardUserDefaults()
+        .stringForKey(&NSString::from_str(GRANTED_VERSION_KEY))
+        .map(|version| version.to_string());
+    let updated = granted_version.is_some_and(|version| version != env!("CARGO_PKG_VERSION"));
+    if !updated || all_granted() {
+        return false;
+    }
+    for permission in ALL.iter().filter(|permission| !permission.is_granted()) {
+        let reset = Command::new(TCCUTIL)
+            .args(["reset", permission.tcc_service(), BUNDLE_ID])
+            .output();
+        if !reset.is_ok_and(|output| output.status.success()) {
+            crate::log::append(&format!("permissions: сброс {} не удался", permission.tcc_service()));
+        }
+    }
+    true
 }
 
 pub fn open_accessibility_pane() {
@@ -104,15 +149,8 @@ impl PermissionRows {
         let cells: Vec<(Retained<NSStackView>, Retained<NSStackView>)> = rows
             .iter()
             .map(|(permission, status, button)| {
-                let name = stack(
-                    mtm,
-                    &[
-                        &*ui_style::wrapping_label(mtm, permission.title(lang)),
-                        &*detail_label(mtm, permission.detail(lang)),
-                    ],
-                    NSUserInterfaceLayoutOrientation::Vertical,
-                );
-                name.setSpacing(DETAIL_GAP);
+                let name =
+                    ui_style::title_with_detail(mtm, permission.title(lang), permission.detail(lang));
                 let state = stack(
                     mtm,
                     &[&**status, &**button],
@@ -144,13 +182,6 @@ impl PermissionRows {
             button.setHidden(granted);
         }
     }
-}
-
-fn detail_label(mtm: MainThreadMarker, text: &str) -> Retained<NSTextField> {
-    let detail = ui_style::wrapping_label(mtm, text);
-    detail.setFont(Some(&ui_style::footer_font()));
-    detail.setTextColor(Some(&ui_style::secondary_label_color()));
-    detail
 }
 
 fn stack(

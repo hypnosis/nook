@@ -2,8 +2,9 @@
 
 use crate::capture::{self, POSITION_TOLERANCE};
 
-/// Иконки левее ≡◂ слева направо: панель — левее разделителя, основной ряд — правее.
-/// Пока идёт «Применить», порядок замирает.
+/// Иконки левее ≡◂ слева направо, как они должны стоять: панель — левее разделителя,
+/// основной ряд — правее. Порядок задают первое чтение строки и «Применить»; строка меню
+/// только сообщает, какие иконки в каком ряду есть. Пока идёт «Применить», порядок замирает.
 #[derive(Default)]
 pub struct Layout {
     panel: Vec<u32>,
@@ -33,18 +34,25 @@ impl Layout {
         self.applying = false;
     }
 
+    /// Порядок, который поставило «Применить».
+    pub fn set(&mut self, panel: &[u32], main: &[u32]) {
+        self.update(panel.to_vec(), main.to_vec());
+    }
+
     /// Порядок совпадает с желаемым `panel` и `main`; иконки, которых нет в желаемом, не в счёт.
     pub fn matches(&self, panel: &[u32], main: &[u32]) -> bool {
         let wanted = |id: &&u32| panel.contains(id) || main.contains(id);
         self.panel.iter().filter(wanted).eq(panel) && self.main.iter().filter(wanted).eq(main)
     }
 
-    /// Читает порядок из строки меню. `divider` — окно разделителя панели (None — разделителя
-    /// нет), `spacer_x` — левый край ≡◂. Широкий разделитель прячет иконки панели по порядку,
-    /// а основной ряд остаётся виден. При узком панель — всё левее него, но крайние иконки
-    /// macOS прячет у чёлки и может переставить между собой: их порядок остаётся прежним.
-    /// Окна разделителя нет или узкий спрятан — порядок не читается. Возвращает, прочитан ли он.
-    pub fn refresh(&mut self, divider: Option<u32>, spacer_x: f64) -> bool {
+    /// Сверяет порядок со строкой меню: известные иконки сохраняют своё место, новые встают
+    /// в конец своего ряда, пропавшие убираются, сменившие ряд переходят в конец нового.
+    /// Порядок пуст — берётся как стоит. `divider` — окно разделителя панели (None — его нет),
+    /// `spacer_x` — левый край ≡◂. Широкий разделитель прячет иконки панели, основной ряд
+    /// остаётся виден; при узком панель — всё левее него. `automatic` — разделителя нет,
+    /// и панель — всё, что macOS не уместила в строку. Окна разделителя нет, узкий спрятан
+    /// или левее ≡◂ ничего не нашлось — строка не прочитана. Возвращает, прочитана ли она.
+    pub fn refresh(&mut self, divider: Option<u32>, spacer_x: f64, automatic: bool) -> bool {
         if self.applying {
             return false;
         }
@@ -60,7 +68,6 @@ impl Layout {
         if narrow_x.is_some() && divider_window.is_some_and(|window| !window.onscreen) {
             return false;
         }
-        let mut hidden = Vec::new();
         let mut panel = Vec::new();
         let mut main = Vec::new();
         for window in windows
@@ -69,23 +76,35 @@ impl Layout {
         {
             let in_panel = match narrow_x {
                 Some(x) => capture::is_panel_icon(window, x),
-                None => divider.is_some() && !window.onscreen,
+                None => (divider.is_some() || automatic) && !window.onscreen,
             };
-            if !in_panel {
-                main.push(window.id);
-            } else if narrow_x.is_some() && !window.onscreen {
-                hidden.push(window.id);
-            } else {
+            if in_panel {
                 panel.push(window.id);
+            } else {
+                main.push(window.id);
             }
         }
-        hidden.sort_by_key(|id| self.panel.iter().position(|known| known == id).unwrap_or(usize::MAX));
-        let panel: Vec<u32> = hidden.into_iter().chain(panel).collect();
+        if panel.is_empty() && main.is_empty() {
+            return false;
+        }
+        let panel = keep_order(&self.panel, panel);
+        let main = keep_order(&self.main, main);
+        self.update(panel, main);
+        true
+    }
+
+    fn update(&mut self, panel: Vec<u32>, main: Vec<u32>) {
         if panel != self.panel || main != self.main {
             crate::log::append(&format!("порядок: панель {panel:?}, основной ряд {main:?}"));
             self.panel = panel;
             self.main = main;
         }
-        true
     }
+}
+
+/// Иконки ряда `present` в порядке `known`; которых в `known` нет — в конце, как стоят.
+fn keep_order(known: &[u32], present: Vec<u32>) -> Vec<u32> {
+    let mut row: Vec<u32> = known.iter().filter(|id| present.contains(id)).copied().collect();
+    row.extend(present.into_iter().filter(|id| !known.contains(id)));
+    row
 }

@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Panel for icons hidden under the notch: a strip under the menu bar shows snapshots of the icons the notch hides. Clicking a snapshot presses the real icon, and its menu opens next to the panel. See ADR 012, 016, 017.
 - The panel follows the macOS light/dark theme and refreshes its icons every 2 s while open.
 - Settings window with General, Layout and Permissions sections. The layout editor arranges icons between the main row and the panel and moves the real menu bar icons on Apply; icons that refuse to move stay put. See ADR 013.
+- Automatic layout option in Settings → Layout: the panel shows every icon that doesn't fit in the menu bar, with no manual arrangement. See ADR 018.
 - Permissions window on launch: explains both permissions and opens the matching System Settings pane.
 - Dock icon while a Nook window is open.
 

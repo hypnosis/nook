@@ -265,16 +265,72 @@ define_class!(
         fn on_toggle_show_panel(&self, sender: &NSSwitch) {
             let on = sender.state() == NSControlStateValueOn;
             crate::settings::set_show_panel(on);
+            if let Some(settings) = self.ivars().settings.borrow().as_ref() {
+                settings.refresh();
+            }
             if let Some(items) = self.ivars().items.borrow().as_ref() {
                 self.sync_panel(items, self.ivars().hidden.get());
             }
         }
 
+        /// Переключатель «Автоматическое расположение»: включён — разделителя нет и панель
+        /// показывает всё, что не поместилось; выключен — разделитель возвращается на своё место.
+        /// Порядок в обоих случаях читается заново.
+        #[unsafe(method(onToggleAutomaticLayout:))]
+        fn on_toggle_automatic_layout(&self, sender: &NSSwitch) {
+            if self.is_applying() {
+                return;
+            }
+            let automatic = sender.state() == NSControlStateValueOn;
+            crate::settings::set_automatic_layout(automatic);
+            if let Some(settings) = self.ivars().settings.borrow().as_ref() {
+                settings.refresh();
+            }
+            if automatic {
+                self.stop_editor_refresh();
+                crate::reveal::exit(None);
+                self.remove_divider();
+                self.reindex_panel();
+                return;
+            }
+            if !crate::divider::is_enabled() {
+                self.reindex_panel();
+                return;
+            }
+            let mtm = self.mtm();
+            self.ivars()
+                .divider
+                .borrow_mut()
+                .get_or_insert_with(|| crate::divider::create(mtm));
+            let target: &AnyObject = self.as_ref();
+            unsafe {
+                NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                    APPLY_SETTLE_DELAY,
+                    target,
+                    sel!(onDividerRestored:),
+                    None,
+                    false,
+                );
+            }
+        }
+
+        /// Разделитель вернулся в строку — расширяем его и читаем панель заново.
+        #[unsafe(method(onDividerRestored:))]
+        fn on_divider_restored(&self, _timer: *mut AnyObject) {
+            self.find_divider_window(&[]);
+            self.widen_divider();
+            self.reindex_panel();
+        }
+
         /// Открыт раздел «Расположение»: раскрываем строку, снимаем иконки левее ≡◂
         /// и обновляем снимки, пока раздел открыт.
         /// Взведённый таймер сворачивания гасим, иначе он спрячет иконки посреди снимка.
+        /// При автоматическом расположении редактор скрыт, и раскрывать строку незачем.
         #[unsafe(method(onEditorNeedsIcons))]
         fn on_editor_needs_icons(&self) {
+            if crate::settings::automatic_layout() {
+                return;
+            }
             self.cancel_collapse_timer();
             if self.ivars().hidden.get() {
                 self.toggle();
@@ -303,7 +359,8 @@ define_class!(
             }
         }
 
-        /// Раздел «Расположение» закрыт — таймер останавливается. Во время перетаскивания,
+        /// Раздел «Расположение» закрыт или редактор скрыт автоматическим расположением —
+        /// таймер останавливается. Во время перетаскивания,
         /// «Применить» и при спрятанных иконках снимок пропускается.
         #[unsafe(method(onEditorRefresh:))]
         fn on_editor_refresh(&self, _timer: *mut AnyObject) {
@@ -311,10 +368,8 @@ define_class!(
                 Some(settings) => (settings.is_layout_shown(), settings.editor.is_dragging()),
                 None => (false, false),
             };
-            if !shown {
-                if let Some(timer) = self.ivars().editor_refresh_timer.borrow_mut().take() {
-                    timer.invalidate();
-                }
+            if !shown || crate::settings::automatic_layout() {
+                self.stop_editor_refresh();
                 return;
             }
             if dragging || self.is_applying() || self.ivars().hidden.get() {
@@ -331,6 +386,9 @@ define_class!(
                 let layout = self.ivars().layout.borrow();
                 layout.panel().iter().chain(layout.main()).copied().collect()
             };
+            if ids.is_empty() {
+                return;
+            }
             crate::capture::capture_for_editor(&ids);
         }
 
@@ -415,6 +473,8 @@ define_class!(
             };
             let order: Vec<u32> =
                 panel_ids.iter().copied().chain([divider_id]).chain(main_ids.iter().copied()).collect();
+            // TODO: временный лог отладки «Применить» — убрать.
+            crate::log::append(&format!("применить: цель {order:?}, разделитель {divider_id}"));
             self.ivars().mouse_taken.set(true);
             crate::mover::take_mouse();
             crate::mover::arrange(order, divider_id);
@@ -457,24 +517,34 @@ define_class!(
 
         /// Перестановка закончена. Пока разделитель узкий, видно, остались ли иконки панели:
         /// пустой панели разделитель не нужен, иначе он снова широкий и прячет её.
-        /// `cramped` — иконку, которую надо было сдвинуть, спрятала чёлка.
-        #[unsafe(method(onLayoutApplied:))]
-        fn on_layout_applied(&self, cramped: bool) {
+        /// `cramped` — иконку, которую надо было сдвинуть, спрятала чёлка; `landed` — видимые
+        /// иконки встали в нужном порядке.
+        #[unsafe(method(onLayoutApplied:landed:))]
+        fn on_layout_applied(&self, cramped: bool, landed: bool) {
             self.give_back_mouse();
             let panel_empty = !self.ivars().divider_window.get().is_some_and(crate::divider::has_icons_left);
             self.settle_divider(panel_empty);
             crate::divider::set_enabled(!panel_empty);
-            self.finish_apply_when_settled(cramped);
+            self.finish_apply_when_settled(cramped, landed);
         }
 
-        /// Строка встала после переноса: порядок — то, что в ней теперь стоит. Не всё
-        /// встало как в редакторе — пояснение под кнопкой. Редактор показывает итог.
-        #[unsafe(method(onApplySettled:))]
-        fn on_apply_settled(&self, cramped: bool) {
-            let refreshed = self.finish_apply();
-            if let Some(settings) = self.ivars().settings.borrow().as_ref() {
-                let (panel, main) = settings.editor.order();
-                let landed = !refreshed || self.ivars().layout.borrow().matches(&panel, &main);
+        /// Строка встала после переноса: порядок — тот, что в редакторе; строка лишь поправляет,
+        /// какие иконки в каком ряду. Не всё встало — пояснение под кнопкой. Редактор показывает итог.
+        #[unsafe(method(onApplySettled:landed:))]
+        fn on_apply_settled(&self, cramped: bool, landed: bool) {
+            let target = self.ivars().settings.borrow().as_ref().map(|settings| settings.editor.order());
+            if let Some((panel, main)) = &target {
+                self.ivars().layout.borrow_mut().set(panel, main);
+            }
+            self.finish_apply();
+            if let (Some(settings), Some((panel, main))) = (self.ivars().settings.borrow().as_ref(), target) {
+                let landed = landed && self.ivars().layout.borrow().matches(&panel, &main);
+                // TODO: временный лог отладки «Применить» — убрать.
+                crate::log::append(&format!(
+                    "применить: совпало={landed} у чёлки={cramped} редактор {panel:?} | {main:?}, строка {:?} | {:?}",
+                    self.ivars().layout.borrow().panel(),
+                    self.ivars().layout.borrow().main()
+                ));
                 let lang = self.ivars().lang;
                 let note = if cramped { strings::editor_cramped(lang) } else { strings::editor_not_landed(lang) };
                 settings.set_apply_note((!landed).then_some(note));
@@ -599,19 +669,23 @@ define_class!(
         }
 
         /// Движение мыши (от монитора). Работает только когда иконки показаны.
-        /// Мышь в полосе menu bar или открыт раздел «Расположение» → гасим таймер коллапса.
+        /// Мышь в полосе menu bar или над панелью → гасим таймер коллапса.
         /// Мышь ушла → взводим.
         #[unsafe(method(onMouseMoved))]
         fn on_mouse_moved(&self) {
             if self.ivars().hidden.get() {
                 return; // показывать нечего — следить незачем
             }
-            if auto_collapse::mouse_in_menu_bar_strip(self.mtm())
-                || self.mouse_in_panel()
-                || self.layout_shown()
-            {
+            let in_strip = auto_collapse::mouse_in_menu_bar_strip(self.mtm());
+            let in_panel = self.mouse_in_panel();
+            if in_strip || in_panel {
+                // TODO: временный лог отладки автоскрытия — убрать.
+                if self.ivars().collapse_timer.borrow().is_some() {
+                    crate::log::append(&format!("автоскрытие: погашено, strip={in_strip} panel={in_panel}"));
+                }
                 self.cancel_collapse_timer();
             } else if self.ivars().collapse_timer.borrow().is_none() {
+                crate::log::append("автоскрытие: взведено");
                 self.arm_collapse_timer();
             }
         }
@@ -622,8 +696,11 @@ define_class!(
             if self.ivars().hidden.get() || crate::reveal::menu_open() {
                 return;
             }
-            self.refresh_layout();
+            let read = self.refresh_layout();
             let panel = self.ivars().layout.borrow().panel().to_vec();
+            if !read && panel.is_empty() {
+                return;
+            }
             crate::capture::capture_for_panel(&panel);
             if !crate::reveal::is_on() {
                 self.enter_narrow_mode();
@@ -701,6 +778,8 @@ define_class!(
         /// шторка не осталась поверх чужого экрана.
         #[unsafe(method(onSpaceChanged:))]
         fn on_space_changed(&self, _notification: &NSNotification) {
+            // TODO: временный лог отладки мигания панели — убрать.
+            crate::log::append(&format!("рабочий стол сменился, узкий режим={}", crate::reveal::is_on()));
             if !self.ivars().hidden.get() && crate::reveal::is_on() {
                 self.toggle();
             }
@@ -711,6 +790,13 @@ define_class!(
         #[unsafe(method(onAutoCollapse:))]
         fn on_auto_collapse(&self, _timer: *mut AnyObject) {
             self.ivars().collapse_timer.borrow_mut().take();
+            // TODO: временный лог отладки автоскрытия — убрать.
+            crate::log::append(&format!(
+                "автоскрытие: сработало, hidden={} applying={} menu_open={}",
+                self.ivars().hidden.get(),
+                self.is_applying(),
+                crate::reveal::menu_open()
+            ));
             if self.ivars().hidden.get() || self.is_applying() || crate::reveal::menu_open() {
                 return;
             }
@@ -799,6 +885,8 @@ impl Controller {
         };
 
         let going_to_hide = !self.ivars().hidden.get();
+        // TODO: временный лог отладки мигания панели — убрать.
+        crate::log::append(&format!("toggle: {}", if going_to_hide { "прячу" } else { "показываю" }));
 
         // GUARD: прячем только если спейсер реально левее якоря.
         if going_to_hide && !self.spacer_is_left_of_anchor(items) {
@@ -883,8 +971,10 @@ impl Controller {
             let Some(items) = items.as_ref() else { return false };
             status_bar::item_origin_x(&items.spacer, self.mtm())
         };
-        let Some(spacer_x) = spacer_x else { return false };
-        self.ivars().layout.borrow_mut().refresh(divider, spacer_x)
+        // Сразу после раскрытия AppKit ещё отдаёт место ≡◂ из спрятанного состояния — за краем экрана.
+        let Some(spacer_x) = spacer_x.filter(|x| *x > 0.0) else { return false };
+        let automatic = crate::settings::automatic_layout();
+        self.ivars().layout.borrow_mut().refresh(divider, spacer_x, automatic)
     }
 
     fn is_applying(&self) -> bool {
@@ -941,7 +1031,7 @@ impl Controller {
         if self.ivars().hidden.get() {
             return;
         }
-        if !crate::divider::is_enabled() {
+        if !crate::divider::is_enabled() || crate::settings::automatic_layout() {
             self.start_startup_snapshot();
             return;
         }
@@ -982,7 +1072,7 @@ impl Controller {
         }
     }
 
-    /// Конец «Применить»: порядок — то, что теперь стоит в строке меню. Возвращает, прочитан ли он.
+    /// Конец «Применить»: порядок снова сверяется со строкой меню. Возвращает, прочитана ли она.
     fn finish_apply(&self) -> bool {
         self.ivars().layout.borrow_mut().end_apply();
         if let Some(settings) = self.ivars().settings.borrow().as_ref() {
@@ -996,8 +1086,8 @@ impl Controller {
     }
 
     /// После переноса ждёт, пока разделитель снова широкий (или убран) и строка встала,
-    /// и зовёт `onApplySettled:`.
-    fn finish_apply_when_settled(&self, cramped: bool) {
+    /// и зовёт `onApplySettled:landed:`.
+    fn finish_apply_when_settled(&self, cramped: bool, landed: bool) {
         let divider_id = self.ivars().divider_window.get();
         thread::spawn(move || {
             if let Some(divider_id) = divider_id {
@@ -1008,7 +1098,7 @@ impl Controller {
                 let mtm = MainThreadMarker::new().expect("main queue");
                 if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
                     let delegate: &AnyObject = delegate.as_ref();
-                    let _: () = unsafe { msg_send![delegate, onApplySettled: cramped] };
+                    let _: () = unsafe { msg_send![delegate, onApplySettled: cramped, landed: landed] };
                 }
             });
         });
@@ -1038,12 +1128,37 @@ impl Controller {
     /// После переноса: пустой панели разделитель не нужен, иначе он снова широкий и прячет её.
     fn settle_divider(&self, panel_empty: bool) {
         if panel_empty {
-            if let Some(divider) = self.ivars().divider.borrow_mut().take() {
-                crate::divider::remove(&divider);
-            }
-            self.ivars().divider_window.set(None);
+            self.remove_divider();
         } else {
             self.widen_divider();
+        }
+    }
+
+    /// Убирает разделитель из строки; его место macOS помнит по autosave.
+    fn remove_divider(&self) {
+        if let Some(divider) = self.ivars().divider.borrow_mut().take() {
+            crate::divider::remove(&divider);
+        }
+        self.ivars().divider_window.set(None);
+    }
+
+    /// Сбрасывает порядок и читает его заново: открытая панель переснимается, открытый
+    /// редактор тоже. Свёрнутую строку снимет следующее раскрытие.
+    fn reindex_panel(&self) {
+        // TODO: временный лог отладки мигания панели — убрать.
+        crate::log::append("reindex_panel");
+        *self.ivars().layout.borrow_mut() = Layout::default();
+        if self.layout_shown() && !crate::settings::automatic_layout() {
+            let _: () = unsafe { msg_send![self, onEditorNeedsIcons] };
+        }
+        if self.ivars().panel.borrow().as_ref().is_some_and(Panel::is_visible) {
+            self.capture_panel_when_settled();
+        }
+    }
+
+    fn stop_editor_refresh(&self) {
+        if let Some(timer) = self.ivars().editor_refresh_timer.borrow_mut().take() {
+            timer.invalidate();
         }
     }
 
