@@ -7,10 +7,10 @@
 use std::cell::{Cell, OnceCell, RefCell};
 
 use objc2::rc::Retained;
-use objc2::runtime::NSObjectProtocol;
+use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
 use objc2_app_kit::{
-    NSBox, NSBoxType, NSEvent, NSImage, NSImageView, NSLayoutConstraint, NSTextField,
+    NSApplication, NSBox, NSBoxType, NSEvent, NSImage, NSImageView, NSLayoutConstraint, NSTextField,
     NSTitlePosition, NSView, NSWorkspace,
 };
 use objc2_foundation::{NSArray, NSNumber, NSPoint, NSRect, NSSize, NSString};
@@ -50,6 +50,8 @@ pub struct EditorIvars {
     height: OnceCell<Retained<NSLayoutConstraint>>,
     laid_out_width: Cell<f64>,
     drag: RefCell<Option<Drag>>,
+    /// Иконки переставляются в строке меню: брать плитки нельзя.
+    locked: Cell<bool>,
     metrics: EditorMetrics,
 }
 
@@ -90,6 +92,9 @@ define_class!(
 
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
+            if self.ivars().locked.get() {
+                return;
+            }
             let point = self.location(event);
             let mut rows = self.ivars().rows.borrow_mut();
             let Some((row, position)) = rows.iter().enumerate().find_map(|(row, tiles)| {
@@ -129,8 +134,12 @@ define_class!(
         fn mouse_up(&self, _event: &NSEvent) {
             let Some(drag) = self.ivars().drag.borrow_mut().take() else { return };
             let (row, position) = drag.target;
+            let id = drag.tile.id;
             self.ivars().rows.borrow_mut()[row].insert(position, drag.tile);
             self.layout_tiles(true);
+            if self.has_changes() {
+                self.send_to_strip(id);
+            }
         }
     }
 );
@@ -158,6 +167,7 @@ impl EditorView {
             height: OnceCell::new(),
             laid_out_width: Cell::new(width),
             drag: RefCell::new(None),
+            locked: Cell::new(false),
             metrics: ui_style::editor_metrics(mtm),
         });
         let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, 0.0));
@@ -233,6 +243,19 @@ impl EditorView {
 
     pub fn is_dragging(&self) -> bool {
         self.ivars().drag.borrow().is_some()
+    }
+
+    /// Пока иконки переставляются в строке меню, плитки не берутся.
+    pub fn set_locked(&self, locked: bool) {
+        self.ivars().locked.set(locked);
+    }
+
+    /// Брошенная плитка `id` сразу переставляет настоящую иконку.
+    fn send_to_strip(&self, id: u32) {
+        if let Some(delegate) = NSApplication::sharedApplication(self.mtm()).delegate() {
+            let delegate: &AnyObject = delegate.as_ref();
+            let _: () = unsafe { msg_send![delegate, onTileDropped: id] };
+        }
     }
 
     /// Порядок отправлен в строку меню: следующий снимок покажет её как есть.

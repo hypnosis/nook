@@ -460,6 +460,51 @@ define_class!(
             }
         }
 
+        /// Плитка `id` брошена в редакторе: настоящая иконка встаёт к соседям одним переносом.
+        /// Внутри панели строку не трогаем — панель рисуется по порядку. Разделителя нет —
+        /// полное «Применить».
+        #[unsafe(method(onTileDropped:))]
+        fn on_tile_dropped(&self, id: u32) {
+            if self.is_applying() {
+                return;
+            }
+            let Some((panel, main)) = self.ivars().settings.borrow().as_ref().map(|settings| settings.editor.order())
+            else {
+                return;
+            };
+            let was_in_panel = self.ivars().layout.borrow().panel().contains(&id);
+            if panel.contains(&id) && was_in_panel {
+                self.settle_drop();
+                return;
+            }
+            let Some(divider) = self.ivars().divider_window.get() else {
+                let _: () = unsafe { msg_send![self, onApplyLayout: std::ptr::null_mut::<AnyObject>()] };
+                return;
+            };
+            let (before, after) = match main.iter().position(|&main_id| main_id == id) {
+                Some(place) => (main.get(place + 1).copied(), Some(place.checked_sub(1).map_or(divider, |left| main[left]))),
+                None => (Some(divider), None),
+            };
+            self.lock_for_drop(true);
+            self.ivars().mouse_taken.set(true);
+            crate::mover::take_mouse();
+            crate::mover::move_one(id, before, after);
+        }
+
+        /// Брошенная иконка переставлена. Не встала — полное «Применить»: оно расставит
+        /// остальные вокруг прибитой иконки.
+        #[unsafe(method(onTileMoved:))]
+        fn on_tile_moved(&self, placed: bool) {
+            self.give_back_mouse();
+            self.lock_for_drop(false);
+            if placed {
+                self.settle_drop();
+            } else {
+                crate::log::append("бросок: иконка не встала — применяю весь порядок");
+                let _: () = unsafe { msg_send![self, onApplyLayout: std::ptr::null_mut::<AnyObject>()] };
+            }
+        }
+
         /// Разделитель разложен — переставляем; ещё нет — ждём ещё, но недолго.
         #[unsafe(method(onApplyStart:))]
         fn on_apply_start(&self, _timer: *mut AnyObject) {
@@ -1147,6 +1192,32 @@ impl Controller {
         if self.ivars().mouse_taken.replace(false) {
             crate::mover::release_mouse();
         }
+    }
+
+    /// Пока брошенная иконка едет, порядок замирает и плитки не берутся.
+    fn lock_for_drop(&self, locked: bool) {
+        {
+            let mut layout = self.ivars().layout.borrow_mut();
+            if locked {
+                layout.begin_apply();
+            } else {
+                layout.end_apply();
+            }
+        }
+        if let Some(settings) = self.ivars().settings.borrow().as_ref() {
+            settings.editor.set_locked(locked);
+        }
+    }
+
+    /// Брошенная плитка встала: реестр берёт порядок редактора, панель переснимается.
+    fn settle_drop(&self) {
+        if let Some(settings) = self.ivars().settings.borrow().as_ref() {
+            let (panel, main) = settings.editor.order();
+            self.ivars().layout.borrow_mut().set(&panel, &main);
+            settings.editor.mark_applied();
+            settings.set_apply_note(None);
+        }
+        let _: () = unsafe { msg_send![self, onPanelCapture: std::ptr::null_mut::<AnyObject>()] };
     }
 
     /// Начало «Применить»: порядок замирает, кнопка в настройках ждёт.

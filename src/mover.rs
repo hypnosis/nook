@@ -202,6 +202,66 @@ pub fn arrange(order: Vec<u32>, own: u32, notch_edge: Option<f64>) {
     });
 }
 
+/// Ставит одну иконку `id` левее `before` и правее `after` и сообщает `onTileMoved:`,
+/// встала ли она туда.
+pub fn move_one(id: u32, before: Option<u32>, after: Option<u32>) {
+    let run = RUN.fetch_add(1, Ordering::SeqCst) + 1;
+    *last_step() = Some(Instant::now());
+    thread::spawn(move || {
+        OWN_RUN.set(run);
+        let started = Instant::now();
+        crate::click::remember_owners_now(&[id]);
+        permit_local_events();
+        let home = CGEvent::location(CGEvent::new(None).as_deref());
+        let outcome = move_next_to(id, before, after, false);
+        post(CGEventType::MouseMoved, home, CGEventFlags::empty());
+        CGWarpMouseCursorPosition(home);
+        let placed = matches!(outcome, Outcome::Moved | Outcome::Skipped) && wait_between(id, before, after);
+        crate::log::append(&format!(
+            "mover: окно {id} {} за {} мс",
+            if placed { "встало" } else { "не встало" },
+            started.elapsed().as_millis()
+        ));
+        *last_step() = None;
+        DispatchQueue::main().exec_async(move || {
+            let mtm = MainThreadMarker::new().expect("main queue");
+            if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
+                let delegate: &AnyObject = delegate.as_ref();
+                let _: () = unsafe { msg_send![delegate, onTileMoved: placed] };
+            }
+        });
+    });
+}
+
+/// Ждёт, пока окно `id` встанет между `after` и `before`; не встало за `SETTLE_TIMEOUT` — `false`.
+fn wait_between(id: u32, before: Option<u32>, after: Option<u32>) -> bool {
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        if stands_between(id, before, after) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(SETTLE_POLL);
+    }
+}
+
+/// Окно `id` стоит правее `after` и левее `before` — тех из них, что нарисованы.
+/// Спрятанное у чёлки окно стоит левее всех нарисованных.
+fn stands_between(id: u32, before: Option<u32>, after: Option<u32>) -> bool {
+    let layout = crate::capture::icon_layout();
+    let Some(item) = layout.iter().find(|window| window.id == id) else { return false };
+    let drawn_x = |wanted: Option<u32>| {
+        wanted.and_then(|wanted| layout.iter().find(|window| window.id == wanted && window.onscreen)).map(|window| window.x)
+    };
+    let (left, right) = (drawn_x(after), drawn_x(before));
+    if !item.onscreen {
+        return left.is_none() && right.is_some();
+    }
+    (left.is_some() || right.is_some()) && left.is_none_or(|x| x < item.x) && right.is_none_or(|x| item.x < x)
+}
+
 /// Переносит нарисованные окна вне цепочки. Окно, которое не сдвинулось, до конца этого
 /// применения стоит на месте: план пересчитывается, остальные ставятся вокруг него.
 /// Если после прохода порядок всё же не совпал, делается добивочный проход.
@@ -383,6 +443,27 @@ fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>, after_move: bo
         (None, Some(previous)) => (Some(others[previous]), others.get(previous + 1).copied()),
         (None, None) => return Outcome::Skipped,
     };
+    // HARDCODE: проба — адресный перенос иконки, спрятанной у чёлки; убрать после пробы.
+    if !item.onscreen {
+        let destination = match (left, right) {
+            (Some(previous), _) => Destination::RightOf(previous),
+            (None, Some(next)) => Destination::LeftOf(next),
+            _ => return Outcome::Hidden,
+        };
+        crate::log::append(&format!(
+            "проба: окно {id} под чёлкой, x {}, процесс {:?}",
+            item.x,
+            crate::click::owner_pid(id)
+        ));
+        let started = Instant::now();
+        let moved = press_and_release(item, destination);
+        crate::log::append(&format!(
+            "проба: окно {id} {} за {} мс",
+            if moved { "сдвинулось" } else { "не сдвинулось" },
+            started.elapsed().as_millis()
+        ));
+        return if moved { Outcome::Moved } else { Outcome::Hidden };
+    }
     let after_left = left.is_none_or(|window| window.x < item.x);
     let before_right = right.is_none_or(|window| item.x < window.x);
     if after_left && before_right {

@@ -125,6 +125,8 @@ impl Settings {
             target,
             sel!(onApplyLayout:),
         );
+        // TODO: проба — иконка переставляется сразу после броска; вернуть кнопку, если проба не приживётся.
+        apply.setHidden(true);
         let progress = NSProgressIndicator::new(mtm);
         progress.setStyle(NSProgressIndicatorStyle::Spinning);
         progress.setControlSize(NSControlSize::Small);
@@ -233,6 +235,7 @@ impl Settings {
             self.set_apply_note(None);
         }
         self.apply.setEnabled(!applying);
+        self.editor.set_locked(applying);
         self.automatic_layout.setEnabled(!applying && show_panel());
         self.progress_label.setHidden(!applying);
         unsafe {
