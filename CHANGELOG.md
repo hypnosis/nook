@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.2] - 2026-10-04
+
+### Fixed
+- One icon that refuses a targeted move no longer switches all later moves to visible dragging until Nook restarts.
+- If a stuck Apply is cancelled, the divider widens again and panel icons stay hidden.
+- Turning off automatic layout no longer triggers an unexpected Apply later when the divider is disabled.
+- No more false "some icons are too close to the edge" warning after turning off automatic layout.
+
 ## [0.3.1] - 2026-10-04
 
 ### Added
