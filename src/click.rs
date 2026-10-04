@@ -39,13 +39,7 @@ static CACHE: Mutex<Option<HashMap<u32, AxItem>>> = Mutex::new(None);
 /// В фоне находит элементы для окон панели, которых ещё нет в кэше.
 /// С `notify` по окончании зовёт `onOwnersRemembered` у делегата приложения.
 pub fn remember_owners(ids: Vec<u32>, notify: bool) {
-    let missing: Vec<u32> = {
-        let cache = CACHE.lock().unwrap();
-        ids.into_iter()
-            .filter(|id| cache.as_ref().is_none_or(|c| !c.contains_key(id)))
-            .collect()
-    };
-    if missing.is_empty() {
+    if missing_owners(&ids).is_empty() {
         if notify {
             notify_remembered();
         }
@@ -53,16 +47,36 @@ pub fn remember_owners(ids: Vec<u32>, notify: bool) {
     }
     let pids = running_pids();
     std::thread::spawn(move || {
-        let found = match_windows(&missing, &pids);
-        CACHE
-            .lock()
-            .unwrap()
-            .get_or_insert_with(HashMap::new)
-            .extend(found);
+        find_owners(&missing_owners(&ids), &pids);
         if notify {
             notify_remembered();
         }
     });
+}
+
+/// То же, что `remember_owners`, но ждёт, пока элементы найдутся. Не из главного потока.
+pub fn remember_owners_now(ids: &[u32]) {
+    let missing = missing_owners(ids);
+    if !missing.is_empty() {
+        find_owners(&missing, &running_pids());
+    }
+}
+
+fn missing_owners(ids: &[u32]) -> Vec<u32> {
+    let cache = CACHE.lock().unwrap();
+    ids.iter()
+        .filter(|id| cache.as_ref().is_none_or(|c| !c.contains_key(id)))
+        .copied()
+        .collect()
+}
+
+fn find_owners(ids: &[u32], pids: &[i32]) {
+    let found = match_windows(ids, pids);
+    CACHE
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .extend(found);
 }
 
 fn notify_remembered() {

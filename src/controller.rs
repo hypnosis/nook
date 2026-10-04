@@ -614,7 +614,10 @@ define_class!(
             }
             self.finish_apply();
             if let (Some(settings), Some((panel, main))) = (self.ivars().settings.borrow().as_ref(), target) {
-                let landed = landed && self.ivars().layout.borrow().matches(&panel, &main);
+                let landed = landed && crate::layout::bar_matches(&panel, &main, self.ivars().divider_window.get());
+                if !landed {
+                    crate::log::append(&format!("применить: строка встала не так — панель {panel:?}, основной ряд {main:?}"));
+                }
                 let lang = self.ivars().lang;
                 let note = if cramped { strings::editor_cramped(lang) } else { strings::editor_not_landed(lang) };
                 settings.set_apply_note((!landed).then_some(note));
@@ -1227,10 +1230,20 @@ impl Controller {
             };
             (status_bar::item_origin_x(&items.spacer, mtm), screen.frame().size.width)
         };
+        let old_divider = self
+            .ivars()
+            .divider_window
+            .get()
+            .and_then(|id| layout.iter().find(|window| window.id == id));
         let edge = match first_main {
             Some(id) => layout.iter().find(|window| window.id == id && window.onscreen).map(|window| window.x),
             None => spacer_x,
-        };
+        }
+        // Старый разделитель правее края: когда его уберут, край сдвинется на его ширину.
+        .map(|edge| match old_divider {
+            Some(divider) if divider.x > edge => edge + divider.width,
+            _ => edge,
+        });
         let Some(edge) = edge else {
             crate::log::append("применить: первой иконки основного ряда не видно — разделитель не переставляю");
             return false;

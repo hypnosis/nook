@@ -44,6 +44,7 @@ fn main() {
 
     // Accessory: приложение-агент без иконки в Dock, живёт только в строке меню.
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    mover::allow_cursor_hiding_in_background();
 
     // Контроллер удерживается до конца программы — он владелец айтемов и делегат.
     let controller: Retained<Controller> = Controller::new(mtm);

@@ -61,7 +61,7 @@ objc2-app-kit = { version = "0.3.2", features = [
 ] }
 objc2-core-foundation = "*"
 objc2-service-management = { version = "0.3.2", features = ["SMAppService"] }
-objc2-core-graphics = { version = "0.3", features = ["CGWindow", "CGImage", "CGGeometry", "CGEvent", "CGEventTypes", "CGDirectDisplay", "CGError", "CGRemoteOperation", "CGBitmapContext", "CGContext", "CGColorSpace"] }
+objc2-core-graphics = { version = "0.3", features = ["CGWindow", "CGImage", "CGGeometry", "CGEvent", "CGEventTypes", "CGEventSource","CGDirectDisplay", "CGError", "CGRemoteOperation", "CGBitmapContext", "CGContext", "CGColorSpace"] }
 objc2-screen-capture-kit = { version = "0.3", features = ["SCShareableContent", "SCScreenshotManager", "SCStream", "block2", "objc2-core-graphics"] }
 dispatch2 = "0.3"
 objc2-application-services = { version = "0.3", features = ["AXUIElement", "AXValue", "AXError", "HIServices"] }

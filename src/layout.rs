@@ -55,12 +55,6 @@ impl Layout {
         self.update(panel.to_vec(), main.to_vec());
     }
 
-    /// Порядок совпадает с желаемым `panel` и `main`; иконки, которых нет в желаемом, не в счёт.
-    pub fn matches(&self, panel: &[u32], main: &[u32]) -> bool {
-        let wanted = |id: &&u32| panel.contains(id) || main.contains(id);
-        self.panel.iter().filter(wanted).eq(panel) && self.main.iter().filter(wanted).eq(main)
-    }
-
     /// Сверяет порядок со строкой меню: известные иконки остаются в своём ряду и на своём
     /// месте (при `automatic` ряд — где стоит), новые встают в конец ряда, где стоят,
     /// пропавшие убираются; при `automatic` основной ряд — как стоит. Порядок пуст —
@@ -130,6 +124,29 @@ impl Layout {
             self.main = main;
         }
     }
+}
+
+/// Строка меню стоит как `panel` и `main`: панель левее разделителя `divider`, основной
+/// ряд правее, оба ряда по порядку. Иконки, которых в строке нет, не в счёт.
+pub fn bar_matches(panel: &[u32], main: &[u32], divider: Option<u32>) -> bool {
+    let windows = capture::icon_layout();
+    let row = |ids: &[u32]| -> Vec<u32> {
+        windows.iter().filter(|window| ids.contains(&window.id)).map(|window| window.id).collect()
+    };
+    let (panel_row, main_row) = (row(panel), row(main));
+    let in_order = |wanted: &[u32], standing: &[u32]| {
+        wanted.iter().filter(|id| standing.contains(id)).eq(standing.iter())
+    };
+    if !in_order(panel, &panel_row) || !in_order(main, &main_row) {
+        return false;
+    }
+    let Some(divider_x) = divider.and_then(|id| windows.iter().find(|window| window.id == id)).map(|window| window.x)
+    else {
+        return panel_row.is_empty();
+    };
+    windows.iter().all(|window| {
+        !(panel_row.contains(&window.id) && window.x > divider_x || main_row.contains(&window.id) && window.x < divider_x)
+    })
 }
 
 /// Ряд реестра `row` без пропавших из строки (`present`), плюс новые иконки, которые

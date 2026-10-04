@@ -18,11 +18,12 @@ use dispatch2::DispatchQueue;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, MainThreadMarker};
 use objc2_app_kit::NSApplication;
-use objc2_core_foundation::CGPoint;
+use objc2_core_foundation::{kCFBooleanTrue, CFString, CFType, CGPoint};
 use objc2_core_graphics::{
-    CGAssociateMouseAndMouseCursorPosition, CGDisplayHideCursor, CGDisplayShowCursor, CGEvent,
-    CGEventFlags, CGEventTapLocation, CGEventType, CGMainDisplayID, CGMouseButton,
-    CGWarpMouseCursorPosition,
+    kCGEventFilterMaskPermitAllEvents, CGAssociateMouseAndMouseCursorPosition, CGDisplayHideCursor,
+    CGDisplayShowCursor, CGEvent, CGEventField, CGEventFilterMask, CGEventFlags, CGEventSource,
+    CGEventSourceStateID, CGEventSuppressionState, CGEventTapLocation, CGEventType, CGMainDisplayID,
+    CGMouseButton, CGWarpMouseCursorPosition,
 };
 
 use crate::capture::IconWindow;
@@ -46,8 +47,36 @@ const PINNED_WEIGHT: usize = 1000;
 // HARDCODE: заход в чёлку; вынести в конфиг позже.
 const NOTCH_DROP_INSET: f64 = 5.0;
 
-/// Способы переноса по очереди: (пауза между событиями, вести ли через середину).
-const METHODS: [(Duration, bool); 3] = [(FAST_STEP, false), (FAST_STEP, true), (SAFE_STEP, true)];
+/// Сколько ждать ответа иконки на нажатие или отпускание, адресованное окну.
+const TARGETED_TIMEOUT: Duration = Duration::from_millis(150);
+/// Пауза между переносами: строка меню успевает принять следующий.
+const MOVE_BUFFER: Duration = Duration::from_millis(25);
+/// Поле события с номером окна; в публичных заголовках его нет.
+const WINDOW_ID_FIELD: CGEventField = CGEventField(0x33);
+
+/// Способ переноса.
+#[derive(Clone, Copy)]
+enum Method {
+    /// Нажатие и отпускание адресованы окнам, курсор по строке не ведётся.
+    Targeted,
+    /// Cmd+drag по координатам: (пауза между событиями, вести ли через середину).
+    Drag(Duration, bool),
+}
+
+/// Способы переноса по очереди.
+const METHODS: [Method; 4] = [
+    Method::Targeted,
+    Method::Drag(FAST_STEP, false),
+    Method::Drag(FAST_STEP, true),
+    Method::Drag(SAFE_STEP, true),
+];
+
+/// Куда поставить иконку: вплотную левее окна или вплотную правее.
+#[derive(Clone, Copy)]
+enum Destination<'a> {
+    LeftOf(&'a IconWindow),
+    RightOf(&'a IconWindow),
+}
 
 /// Способ, сработавший последним, — с него и начинаем.
 static PREFERRED: AtomicUsize = AtomicUsize::new(0);
@@ -72,6 +101,26 @@ enum Outcome {
     Hidden,
     /// Переносить не стали: окно не найдено или уже на месте.
     Skipped,
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGSMainConnectionID() -> i32;
+    fn CGSSetConnectionProperty(connection: i32, target: i32, key: &CFString, value: &CFType) -> i32;
+}
+
+/// Разрешает прятать курсор, пока приложение в фоне: без этого `CGDisplayHideCursor`
+/// у агента без активного окна не действует.
+pub fn allow_cursor_hiding_in_background() {
+    let Some(enabled) = (unsafe { kCFBooleanTrue }) else { return };
+    let key = CFString::from_static_str("SetsCursorInBackground");
+    let error = unsafe {
+        let connection = CGSMainConnectionID();
+        CGSSetConnectionProperty(connection, connection, &key, enabled)
+    };
+    if error != 0 {
+        crate::log::append(&format!("mover: SetsCursorInBackground не включился ({error})"));
+    }
 }
 
 /// Прячет курсор и отвязывает от него физическую мышь. Только из главного потока.
@@ -120,6 +169,10 @@ pub fn arrange(order: Vec<u32>, own: u32, notch_edge: Option<f64>) {
     *last_step() = Some(Instant::now());
     thread::spawn(move || {
         OWN_RUN.set(run);
+        let started = Instant::now();
+        crate::click::remember_owners_now(&order);
+        crate::log::append(&format!("mover: владельцы иконок найдены за {} мс", started.elapsed().as_millis()));
+        permit_local_events();
         let home = CGEvent::location(CGEvent::new(None).as_deref());
         let (mut skipped, mut cramped) = arrange_all(&order, own);
         if notch_edge.is_some_and(|edge| push_into_notch(&order, own, edge)) {
@@ -136,6 +189,7 @@ pub fn arrange(order: Vec<u32>, own: u32, notch_edge: Option<f64>) {
         if !landed {
             crate::log::append(&format!("mover: порядок не совпал {result:?}, пропущено {skipped:?}"));
         }
+        crate::log::append(&format!("mover: перенос занял {} мс", started.elapsed().as_millis()));
         *last_step() = None;
         DispatchQueue::main().exec_async(move || {
             let mtm = MainThreadMarker::new().expect("main queue");
@@ -152,7 +206,8 @@ pub fn arrange(order: Vec<u32>, own: u32, notch_edge: Option<f64>) {
 /// Если после прохода порядок всё же не совпал, делается добивочный проход.
 /// Возвращает пропущенные окна и признак, что иконку не перенести из-за чёлки.
 fn arrange_all(order: &[u32], own: u32) -> (Vec<u32>, bool) {
-    let mut pinned: HashSet<u32> = HashSet::new();
+    // Разделитель не переносим: иконки встают вокруг него.
+    let mut pinned: HashSet<u32> = HashSet::from([own]);
     let mut skipped = Vec::new();
     let mut cramped = false;
     let mut corrections = 0;
@@ -160,7 +215,7 @@ fn arrange_all(order: &[u32], own: u32) -> (Vec<u32>, bool) {
         if is_cancelled() {
             break;
         }
-        wait_until_still();
+        wait_order_still(order);
         let current = visible_order(order);
         let wanted = wanted_of(order, &current);
         let stable = stable_chain(&wanted, &current, &pinned);
@@ -179,7 +234,9 @@ fn arrange_all(order: &[u32], own: u32) -> (Vec<u32>, bool) {
                 continue;
             }
             if pinned.contains(&id) {
-                skipped.push(id);
+                if id != own {
+                    skipped.push(id);
+                }
                 continue;
             }
             let before = wanted[place + 1..].iter().find(|next| stable.contains(next)).copied();
@@ -191,7 +248,6 @@ fn arrange_all(order: &[u32], own: u32) -> (Vec<u32>, bool) {
                     skipped.push(id);
                 }
                 Outcome::Skipped => {}
-                Outcome::Stuck if id == own => skipped.push(id),
                 Outcome::Stuck => {
                     pinned.insert(id);
                     replan = true;
@@ -207,11 +263,12 @@ fn arrange_all(order: &[u32], own: u32) -> (Vec<u32>, bool) {
             break;
         }
         if corrections == MAX_CORRECTIONS {
-            wait_until_still();
+            wait_order_still(order);
             break;
         }
         corrections += 1;
     }
+    pinned.remove(&own);
     if !pinned.is_empty() {
         crate::log::append(&format!("mover: окна {pinned:?} не сдвинулись, остальные поставил вокруг"));
     }
@@ -228,7 +285,7 @@ fn push_into_notch(order: &[u32], own: u32, edge: f64) -> bool {
         if is_cancelled() {
             break;
         }
-        wait_until_still();
+        wait_order_still(order);
         let visible = visible_order(order);
         let tail = &order[order.len().saturating_sub(visible.len())..];
         let Some(&id) = visible.iter().find(|&&id| id != own && !tail.contains(&id)) else { break };
@@ -237,7 +294,10 @@ fn push_into_notch(order: &[u32], own: u32, edge: f64) -> bool {
         mark_step();
         let from = CGPoint::new(item.x + item.width / 2.0, item.height / 2.0);
         let to = CGPoint::new(edge - NOTCH_DROP_INSET, from.y);
-        let (step, via_middle) = METHODS[PREFERRED.load(Ordering::Relaxed)];
+        let (step, via_middle) = match METHODS[PREFERRED.load(Ordering::Relaxed)] {
+            Method::Drag(step, via_middle) => (step, via_middle),
+            Method::Targeted => (FAST_STEP, false),
+        };
         drag(from, to, step, via_middle);
         if !settled(id, item.x) {
             crate::log::append(&format!("mover: окно {id} в чёлку не ушло"));
@@ -301,13 +361,13 @@ fn stable_chain(order: &[u32], current: &[u32], pinned: &HashSet<u32>) -> Vec<u3
     chain
 }
 
-/// Ставит `id` перед `before` или, если его нет, после `after`. После предыдущего
-/// переноса (`after_move`) сначала ждём, пока строка меню успокоится; бросаем на
-/// ближний край соседа со стороны, откуда едет иконка.
+/// Ставит `id` перед `before` или, если его нет, после `after`; бросаем на ближний
+/// край соседа со стороны, откуда едет иконка. После предыдущего переноса (`after_move`)
+/// выдерживается короткая пауза.
 fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>, after_move: bool) -> Outcome {
     mark_step();
     if after_move {
-        wait_until_still();
+        thread::sleep(MOVE_BUFFER);
     }
     let layout = crate::capture::icon_layout();
     let Some(item) = layout.iter().find(|window| window.id == id) else { return Outcome::Skipped };
@@ -327,20 +387,31 @@ fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>, after_move: bo
         crate::log::append(&format!("mover: окно {id} не нарисовано (под чёлкой) — пропускаю"));
         return Outcome::Hidden;
     }
-    let target_x = match (left, right) {
-        (_, Some(next)) if item.x > next.x => next.x + DROP_OFFSET,
-        (Some(previous), _) => previous.x + previous.width - DROP_OFFSET,
+    let (destination, target_x) = match (left, right) {
+        (_, Some(next)) if item.x > next.x => (Destination::LeftOf(next), next.x + DROP_OFFSET),
+        (Some(previous), _) => (Destination::RightOf(previous), previous.x + previous.width - DROP_OFFSET),
         _ => return Outcome::Skipped,
     };
     let from = CGPoint::new(item.x + item.width / 2.0, item.height / 2.0);
     let to = CGPoint::new(target_x, from.y);
+    let started = Instant::now();
     let preferred = PREFERRED.load(Ordering::Relaxed);
     let attempts = std::iter::once(preferred).chain((0..METHODS.len()).filter(|&m| m != preferred));
     for method in attempts {
-        let (step, via_middle) = METHODS[method];
-        drag(from, to, step, via_middle);
-        if settled(id, item.x) {
+        let moved = match METHODS[method] {
+            Method::Targeted => press_and_release(item, destination),
+            Method::Drag(step, via_middle) => {
+                drag(from, to, step, via_middle);
+                settled(id, item.x)
+            }
+        };
+        if moved {
             PREFERRED.store(method, Ordering::Relaxed);
+            let moved_in = started.elapsed().as_millis();
+            let still_in = wait_window_still(id).as_millis();
+            crate::log::append(&format!(
+                "mover: окно {id} перенесено способом {method} за {moved_in} мс, замерло за {still_in} мс"
+            ));
             return Outcome::Moved;
         }
     }
@@ -358,15 +429,139 @@ fn current_order(order: &[u32]) -> Vec<IconWindow> {
 
 /// Ждёт, пока окно `id` уйдёт с `start_x`.
 fn settled(id: u32, start_x: f64) -> bool {
-    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    wait_moved(id, start_x, SETTLE_TIMEOUT).is_some()
+}
+
+/// Ждёт, пока окно `id` уйдёт с `start_x`, и возвращает его новое место.
+fn wait_moved(id: u32, start_x: f64, timeout: Duration) -> Option<f64> {
+    let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         thread::sleep(SETTLE_POLL);
-        let x = crate::capture::icon_layout().into_iter().find(|window| window.id == id).map(|window| window.x);
-        if x.is_some_and(|x| (x - start_x).abs() >= crate::capture::POSITION_TOLERANCE) {
-            return true;
+        if let Some(x) = window_x(id).filter(|x| (x - start_x).abs() >= crate::capture::POSITION_TOLERANCE) {
+            return Some(x);
         }
     }
-    false
+    None
+}
+
+fn window_x(id: u32) -> Option<f64> {
+    crate::capture::icon_layout().into_iter().find(|window| window.id == id).map(|window| window.x)
+}
+
+/// Ждёт, пока окно `id` простоит на месте `STILL_READS` замеров подряд. Возвращает,
+/// сколько ждали.
+fn wait_window_still(id: u32) -> Duration {
+    let started = Instant::now();
+    let mut last = window_x(id);
+    let mut unchanged = 0;
+    while started.elapsed() < STILL_TIMEOUT && unchanged < STILL_READS {
+        thread::sleep(STILL_POLL);
+        let now = window_x(id);
+        if now == last {
+            unchanged += 1;
+        } else {
+            unchanged = 0;
+            last = now;
+        }
+    }
+    started.elapsed()
+}
+
+/// Ждёт, пока порядок окон `order` в строке простоит `STILL_READS` замеров подряд.
+/// Сравнивается порядок, а не координаты: иконки с живой шириной не мешают.
+fn wait_order_still(order: &[u32]) {
+    let started = Instant::now();
+    let snapshot = || -> Vec<(u32, bool)> {
+        current_order(order).iter().map(|window| (window.id, window.onscreen)).collect()
+    };
+    let mut last = snapshot();
+    let mut unchanged = 0;
+    while unchanged < STILL_READS {
+        if started.elapsed() >= STILL_TIMEOUT {
+            crate::log::append("mover: порядок не успокоился — считаю по последнему замеру");
+            return;
+        }
+        thread::sleep(STILL_POLL);
+        let now = snapshot();
+        if now == last {
+            unchanged += 1;
+        } else {
+            unchanged = 0;
+            last = now;
+        }
+    }
+}
+
+/// Точки нажатия и отпускания у края соседа: иконка встаёт вплотную к нему.
+fn target_points(item: &IconWindow, destination: Destination) -> (CGPoint, CGPoint) {
+    match destination {
+        Destination::LeftOf(target) => {
+            let mut start = CGPoint::new(target.x, 0.0);
+            let mut end = start;
+            if item.x + item.width <= target.x {
+                end.x -= item.width;
+            } else {
+                start.x -= 1.0;
+            }
+            (start, end)
+        }
+        Destination::RightOf(target) => {
+            let mut start = CGPoint::new(target.x + target.width, 0.0);
+            let mut end = start;
+            if item.x <= target.x + target.width {
+                end.x -= item.width;
+            } else {
+                start.x += 1.0;
+            }
+            (start, end)
+        }
+    }
+}
+
+/// Перенос, адресованный окнам: нажатие с Cmd — самой иконке, отпускание — соседу, обе
+/// точки у края соседа, курсор по строке не ведётся. Событие получает приложение иконки.
+/// Отпускание уходит и тогда, когда иконка не взялась, чтобы она не осталась зажатой.
+fn press_and_release(item: &IconWindow, destination: Destination) -> bool {
+    if is_cancelled() {
+        return false;
+    }
+    let target = match destination {
+        Destination::LeftOf(window) | Destination::RightOf(window) => window,
+    };
+    let pid = crate::click::owner_pid(item.id);
+    let (start, end) = target_points(item, destination);
+    post_to_window(CGEventType::LeftMouseDown, start, item.id, pid, CGEventFlags::MaskCommand);
+    let lifted_x = wait_moved(item.id, item.x, TARGETED_TIMEOUT);
+    // Двойное отпускание: одиночное на Tahoe иногда оставляет иконку зажатой.
+    for _ in 0..2 {
+        post_to_window(CGEventType::LeftMouseUp, end, target.id, pid, CGEventFlags::empty());
+    }
+    let moved = wait_moved(item.id, item.x, TARGETED_TIMEOUT).is_some();
+    if !moved {
+        crate::log::append(&format!(
+            "mover: окно {} не взялось по адресу (процесс {pid:?}, нажатие {})",
+            item.id,
+            if lifted_x.is_some() { "сдвинуло" } else { "не сдвинуло" }
+        ));
+    }
+    moved
+}
+
+/// Разрешает настоящей мыши и клавиатуре работать, пока идут поддельные события.
+fn permit_local_events() {
+    let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState);
+    let source = source.as_deref();
+    for state in [
+        CGEventSuppressionState::EventSuppressionStateRemoteMouseDrag,
+        CGEventSuppressionState::EventSuppressionStateSuppressionInterval,
+    ] {
+        CGEventSource::set_local_events_filter_during_suppression_state(
+            source,
+            CGEventFilterMask(kCGEventFilterMaskPermitAllEvents),
+            state,
+        );
+    }
+    CGEventSource::set_local_events_suppression_interval(source, 0.0);
 }
 
 /// Ждёт, пока строка меню доиграет анимацию: `STILL_READS` замеров подряд совпали
@@ -411,6 +606,29 @@ fn drag(from: CGPoint, to: CGPoint, step: Duration, via_middle: bool) {
     post(CGEventType::LeftMouseDragged, to, cmd);
     thread::sleep(step);
     post(CGEventType::LeftMouseUp, to, cmd);
+}
+
+/// Событие мыши, адресованное окну `window` полями события, а не точкой под курсором.
+/// Уходит в сессию и, если известен, процессу `pid` — приложению иконки.
+fn post_to_window(kind: CGEventType, at: CGPoint, window: u32, pid: Option<i32>, flags: CGEventFlags) {
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState);
+    let event = CGEvent::new_mouse_event(source.as_deref(), kind, at, CGMouseButton::Left);
+    let event = event.as_deref();
+    CGEvent::set_flags(event, flags);
+    for field in [
+        CGEventField::MouseEventWindowUnderMousePointer,
+        CGEventField::MouseEventWindowUnderMousePointerThatCanHandleThisEvent,
+        WINDOW_ID_FIELD,
+    ] {
+        CGEvent::set_integer_value_field(event, field, i64::from(window));
+    }
+    if let Some(pid) = pid {
+        CGEvent::set_integer_value_field(event, CGEventField::EventTargetUnixProcessID, i64::from(pid));
+    }
+    CGEvent::post(CGEventTapLocation::SessionEventTap, event);
+    if let Some(pid) = pid {
+        CGEvent::post_to_pid(pid, event);
+    }
 }
 
 fn post(kind: CGEventType, at: CGPoint, flags: CGEventFlags) {

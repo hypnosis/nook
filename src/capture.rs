@@ -20,6 +20,9 @@ use objc2_screen_capture_kit::{
 };
 
 const CONTROL_CENTER_BUNDLE: &str = "com.apple.controlcenter";
+/// Окно системного индикатора камеры, микрофона и записи экрана: его место решает macOS,
+/// и появляется оно само, пока идёт запись — в том числе наши снимки.
+const PRIVACY_INDICATOR: &str = "AudioVideoModule";
 // HARDCODE: предел высоты окна иконки строки меню и ожидание снимка; вынести в конфиг позже.
 const MAX_ICON_HEIGHT: f64 = 50.0;
 const SHOT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -229,7 +232,8 @@ fn icon_windows(keep: impl Fn(&IconWindow) -> bool) -> Vec<IconWindow> {
                 && pid == owner_pid
                 && y == 0.0
                 && height <= MAX_ICON_HEIGHT
-                && !name.contains("Clone");
+                && !name.contains("Clone")
+                && name != PRIVACY_INDICATOR;
             let window = IconWindow {
                 id,
                 x,
