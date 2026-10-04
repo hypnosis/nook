@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-10-04
+
+### Added
+- Settings → Permissions: a button that resets Nook's permissions, and a hint when the granted permissions no longer apply.
+- Turning off automatic layout puts the manual order back into the menu bar right away.
+
+### Changed
+- Apply is much faster and invisible: icons are moved by events addressed to their windows, like Ice on Tahoe, and the cursor stays hidden. A run takes a fraction of a second instead of several seconds. Dragging is used only as a fallback. See ADR 019.
+- The panel and the layout editor refresh right after Apply.
+- "Not everything landed" now checks the whole menu bar: the main row order and which side of the divider each icon is on.
+
+### Fixed
+- Apply no longer needs a second press to get the order right: the divider is not recreated when it is already in place.
+- Panel icons no longer show up in the menu bar after Apply while screen recording is active: the system recording indicator is no longer treated as an icon.
+- Moving the mouse during Apply no longer breaks the layout: an icon whose snapshot failed keeps its place in the editor.
+- Apply no longer drags Nook's own divider or pushes icons under the notch when everything fits.
+
 ## [0.3.0] - 2026-10-03
 
 ### Added
