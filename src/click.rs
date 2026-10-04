@@ -11,7 +11,7 @@ use std::sync::{Mutex, PoisonError};
 use dispatch2::DispatchQueue;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, MainThreadMarker};
-use objc2_app_kit::{NSApplication, NSWorkspace};
+use objc2_app_kit::{NSApplication, NSRunningApplication, NSWorkspace};
 use objc2_application_services::{
     AXIsProcessTrusted, AXIsProcessTrustedWithOptions, AXUIElement, AXValue, AXValueType,
 };
@@ -97,6 +97,13 @@ pub fn owner_pid(id: u32) -> Option<i32> {
         .as_ref()?
         .get(&id)
         .map(|item| item.pid)
+}
+
+/// Имя приложения иконки `id`, как его показывает macOS; приложение ещё не найдено — `None`.
+pub fn owner_name(id: u32) -> Option<String> {
+    let pid = owner_pid(id)?;
+    let name = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)?.localizedName()?;
+    Some(name.to_string())
 }
 
 /// Нажимает настоящую иконку, чьё окно — `id`. AXPress ждёт ответа приложения,

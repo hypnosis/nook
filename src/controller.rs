@@ -119,6 +119,8 @@ pub struct ControllerIvars {
     divider_window: Cell<Option<u32>>,
     /// Мышь отвязана от курсора на время переноса.
     mouse_taken: Cell<bool>,
+    /// Порядок панели уже взят с диска.
+    panel_restored: Cell<bool>,
 }
 
 define_class!(
@@ -426,6 +428,9 @@ define_class!(
             };
             if panel.contains(&id) && self.ivars().layout.borrow().panel().contains(&id) {
                 self.ivars().layout.borrow_mut().set(&panel, &main);
+                if self.ivars().panel_restored.get() {
+                    self.persist_panel();
+                }
                 let _: () = unsafe { msg_send![self, onPanelCapture: std::ptr::null_mut::<AnyObject>()] };
                 return;
             }
@@ -752,6 +757,7 @@ impl Controller {
             layout: RefCell::new(Layout::default()),
             divider_window: Cell::new(None),
             mouse_taken: Cell::new(false),
+            panel_restored: Cell::new(false),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -883,7 +889,31 @@ impl Controller {
         }
         self.find_divider_window();
         let windows = crate::capture::icon_layout();
-        self.ivars().layout.borrow_mut().sync(&windows, crate::settings::automatic_layout())
+        let automatic = crate::settings::automatic_layout();
+        let read = self.ivars().layout.borrow_mut().sync(&windows, automatic);
+        if !automatic && (read || self.ivars().panel_restored.get()) {
+            self.persist_panel();
+        }
+        read
+    }
+
+    /// Порядок панели переживает перезапуск: когда приложения всех её иконок известны,
+    /// первый раз он берётся с диска, дальше каждое изменение пишется на диск.
+    fn persist_panel(&self) {
+        let panel = self.ivars().layout.borrow().panel().to_vec();
+        let Some(names) = panel.iter().map(|id| crate::click::owner_name(*id)).collect::<Option<Vec<_>>>() else {
+            return;
+        };
+        if !self.ivars().panel_restored.replace(true) {
+            let saved = crate::settings::panel_order();
+            self.ivars().layout.borrow_mut().restore_panel(&saved, crate::click::owner_name);
+            crate::log::append(&format!("панель: сохранённый порядок {saved:?}"));
+            return;
+        }
+        if names != crate::settings::panel_order() {
+            crate::settings::set_panel_order(&names);
+            crate::log::append(&format!("панель: записан порядок {names:?}"));
+        }
     }
 
     fn is_moving(&self) -> bool {

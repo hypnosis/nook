@@ -25,6 +25,7 @@ use crate::ui_style::{self, button, grid, label, wrapping_label, SPACING};
 
 const SHOW_PANEL_KEY: &str = "showPanel";
 const AUTOMATIC_LAYOUT_KEY: &str = "automaticLayout";
+const PANEL_ORDER_KEY: &str = "panelOrder";
 const LAYOUT_PANE: usize = 1;
 
 // HARDCODE: размеры окна настроек; вынести в конфиг позже.
@@ -64,6 +65,23 @@ pub fn automatic_layout() -> bool {
 pub fn set_automatic_layout(on: bool) {
     NSUserDefaults::standardUserDefaults()
         .setBool_forKey(on, &NSString::from_str(AUTOMATIC_LAYOUT_KEY));
+}
+
+/// Сохранённый порядок панели: имена приложений её иконок слева направо.
+pub fn panel_order() -> Vec<String> {
+    NSUserDefaults::standardUserDefaults()
+        .stringArrayForKey(&NSString::from_str(PANEL_ORDER_KEY))
+        .map(|names| names.iter().map(|name| name.to_string()).collect())
+        .unwrap_or_default()
+}
+
+pub fn set_panel_order(names: &[String]) {
+    let names: Vec<Retained<NSString>> = names.iter().map(|name| NSString::from_str(name)).collect();
+    let names = NSArray::from_retained_slice(&names);
+    // SAFETY: массив строк — допустимое значение для NSUserDefaults.
+    unsafe {
+        NSUserDefaults::standardUserDefaults().setObject_forKey(Some(&names), &NSString::from_str(PANEL_ORDER_KEY));
+    }
 }
 
 pub struct Settings {

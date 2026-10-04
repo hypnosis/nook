@@ -46,6 +46,14 @@ impl Layout {
         }
     }
 
+    /// Ставит иконки панели в сохранённый порядок `saved` (имена приложений); `name` — имя
+    /// приложения иконки. Иконки, которых в `saved` нет, идут следом в прежнем порядке.
+    pub fn restore_panel(&mut self, saved: &[String], name: impl Fn(u32) -> Option<String>) {
+        let mut panel = self.panel.clone();
+        panel.sort_by_key(|id| name(*id).and_then(|name| saved.iter().position(|s| *s == name)).unwrap_or(usize::MAX));
+        self.update(panel, self.main.clone());
+    }
+
     /// Порядок после удачного броска в редакторе.
     pub fn set(&mut self, panel: &[u32], main: &[u32]) {
         self.update(panel.to_vec(), main.to_vec());
