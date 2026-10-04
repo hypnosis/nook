@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-10-04
+
+### Fixed
+- The panel order survives a Nook restart: it is saved by app name and restored once the panel icons are recognised.
+
 ## [0.4.0] - 2026-10-04
 
 ### Changed
