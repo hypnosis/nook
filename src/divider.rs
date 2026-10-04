@@ -10,20 +10,9 @@ use objc2_app_kit::{NSImage, NSStatusBar, NSStatusItem};
 use objc2_foundation::{NSSize, NSString};
 
 use crate::capture::IconWindow;
+use crate::tuning::{HIDING_WIDTH_MIN, NARROW_ITEM_WIDTH, NARROW_WINDOW_MAX, POSITION_TOLERANCE, SCREEN_MARGIN, WINDOW_CHROME};
 
 pub const AUTOSAVE: &str = "nook-divider";
-
-// HARDCODE: геометрия разделителя; вынести в конфиг позже.
-pub const NARROW_WIDTH: f64 = 12.0;
-/// Окно элемента строки меню шире его длины на эти поля.
-const WINDOW_CHROME: f64 = 16.0;
-/// Запас от левого края экрана для самой левой иконки панели.
-const SCREEN_MARGIN: f64 = 20.0;
-/// Меньше этого macOS перемешивает строку и может спрятать сам `<`.
-const MIN_HIDING_WIDTH: f64 = 500.0;
-/// Окно узкого разделителя не шире этого. Виден он может и не быть: при длинном
-/// основном ряде он стоит под чёлкой.
-const NARROW_WINDOW_MAX: f64 = 40.0;
 
 /// Разделитель с окном `window` узкий: иконки левее него стоят в строке по порядку.
 pub fn is_narrow(window: &IconWindow) -> bool {
@@ -34,7 +23,7 @@ pub fn is_narrow(window: &IconWindow) -> bool {
 /// Прозрачная картинка нужна, чтобы macOS сразу разложила элемент: совсем пустой
 /// долго стоит с нулевой шириной.
 pub fn create(mtm: MainThreadMarker) -> Retained<NSStatusItem> {
-    let item = NSStatusBar::systemStatusBar().statusItemWithLength(NARROW_WIDTH);
+    let item = NSStatusBar::systemStatusBar().statusItemWithLength(NARROW_ITEM_WIDTH);
     item.setAutosaveName(Some(&NSString::from_str(AUTOSAVE)));
     if let Some(button) = item.button(mtm) {
         let blank = NSImage::initWithSize(NSImage::alloc(), NSSize::new(1.0, 1.0));
@@ -56,7 +45,7 @@ pub fn hiding_width(divider_id: u32) -> f64 {
         .find(|window| window.id == divider_id)
         .map(|window| window.x)
     else {
-        return MIN_HIDING_WIDTH;
+        return HIDING_WIDTH_MIN;
     };
     let panel_width: f64 = layout
         .iter()
@@ -65,16 +54,16 @@ pub fn hiding_width(divider_id: u32) -> f64 {
         .sum();
     let Some(next_x) = layout
         .iter()
-        .find(|window| window.x > divider_x + crate::capture::POSITION_TOLERANCE)
+        .find(|window| window.x > divider_x + POSITION_TOLERANCE)
         .map(|window| window.x)
     else {
-        return MIN_HIDING_WIDTH;
+        return HIDING_WIDTH_MIN;
     };
     let width = next_x - WINDOW_CHROME - panel_width - SCREEN_MARGIN;
-    if width < MIN_HIDING_WIDTH {
-        crate::log::append(&format!(
-            "divider: иконок панели слишком много ({panel_width} pt) — часть уйдёт за край"
-        ));
+    if width < HIDING_WIDTH_MIN {
+        log::warn!(
+            "иконок панели слишком много ({panel_width} pt) — часть уйдёт за край"
+        );
     }
-    width.max(MIN_HIDING_WIDTH)
+    width.max(HIDING_WIDTH_MIN)
 }

@@ -16,9 +16,7 @@ use objc2::{msg_send, sel};
 use objc2_app_kit::{NSEvent, NSEventMask, NSScreen};
 use objc2_foundation::NSTimer;
 
-/// Задержка перед сворачиванием после ухода мыши из полосы menu bar.
-// HARDCODE: задержка автосворачивания; вынести в конфиг позже.
-const COLLAPSE_DELAY: f64 = 3.0;
+use crate::tuning::{COLLAPSE_DELAY, MENU_BAR_STRIP};
 
 /// Создаёт одноразовый таймер коллапса. Через COLLAPSE_DELAY вызовет
 /// `onAutoCollapse:` на target (контроллере).
@@ -33,10 +31,6 @@ pub fn make_collapse_timer(target: &AnyObject) -> Retained<NSTimer> {
         )
     }
 }
-
-/// Высота полосы menu bar с запасом для детекта «мышь ушла».
-// HARDCODE: высота полосы menu bar; вынести в конфиг позже.
-const MENU_BAR_STRIP: f64 = 40.0;
 
 /// Мышь сейчас в полосе menu bar активного (верхнего) экрана?
 pub fn mouse_in_menu_bar_strip(mtm: MainThreadMarker) -> bool {

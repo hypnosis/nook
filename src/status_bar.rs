@@ -28,14 +28,11 @@ use objc2_app_kit::{NSEventMask, NSImage, NSStatusBar, NSStatusItem, NSVariableS
 use objc2_foundation::{NSData, NSSize, NSString};
 
 use crate::strings::{self, Lang};
+use crate::tuning::NARROW_ITEM_WIDTH;
 
 /// Стабильные имена автосохранения позиций (Cmd+drag переживает перезапуск).
 const ANCHOR_AUTOSAVE: &str = "nook-anchor";
 pub const SPACER_AUTOSAVE: &str = "nook-spacer";
-
-/// Ширина спейсера в показанном состоянии: иконка cutter видна и кликабельна.
-// HARDCODE: ширина спейсера показанного; вынести в конфиг позже.
-pub const SPACER_WIDTH_SHOWN: f64 = 12.0;
 
 /// SF Symbol спейсера-cutter (decrease.indent — нативный аналог list-indent-decrease).
 /// Видимость постоянная: cutter явно показывает границу зоны скрытия.
@@ -75,7 +72,7 @@ unsafe fn make_spacer(
     mtm: MainThreadMarker,
     lang: Lang,
 ) -> Retained<NSStatusItem> {
-    let spacer = bar.statusItemWithLength(SPACER_WIDTH_SHOWN);
+    let spacer = bar.statusItemWithLength(NARROW_ITEM_WIDTH);
     spacer.setAutosaveName(Some(&NSString::from_str(SPACER_AUTOSAVE)));
     if let Some(button) = spacer.button(mtm) {
         button.setToolTip(Some(&NSString::from_str(strings::cutter_tooltip(lang))));
@@ -102,7 +99,7 @@ unsafe fn make_anchor(
         // toggle, правый = меню). sendActionOn возвращает старую маску — игнор.
         let _ = button.sendActionOn(NSEventMask::LeftMouseUp | NSEventMask::RightMouseUp);
     } else {
-        crate::log::append("WARNING: anchor button() returned nil — клик работать не будет");
+        log::warn!("anchor button() returned nil — клик работать не будет");
     }
     anchor
 }
@@ -118,7 +115,7 @@ pub unsafe fn recreate_anchor(
 ) {
     let bar = NSStatusBar::systemStatusBar();
     bar.removeStatusItem(&items.anchor);
-    crate::log::append("retry: удалил застрявший якорь, создаю заново");
+    log::info!("retry: удалил застрявший якорь, создаю заново");
     items.anchor = make_anchor(&bar, mtm, target, lang);
 }
 
@@ -126,7 +123,7 @@ pub unsafe fn recreate_anchor(
 pub unsafe fn recreate_spacer(items: &mut StatusItems, mtm: MainThreadMarker, lang: Lang) {
     let bar = NSStatusBar::systemStatusBar();
     bar.removeStatusItem(&items.spacer);
-    crate::log::append("retry: удалил застрявший спейсер, создаю заново");
+    log::info!("retry: удалил застрявший спейсер, создаю заново");
     items.spacer = make_spacer(&bar, mtm, lang);
 }
 
@@ -142,7 +139,7 @@ pub unsafe fn recreate_both(
     let bar = NSStatusBar::systemStatusBar();
     bar.removeStatusItem(&items.spacer);
     bar.removeStatusItem(&items.anchor);
-    crate::log::append("retry-эскалация: удалил ОБА айтема, пересоздаю композицию");
+    log::info!("retry-эскалация: удалил ОБА айтема, пересоздаю композицию");
     items.spacer = make_spacer(&bar, mtm, lang);
     items.anchor = make_anchor(&bar, mtm, target, lang);
 }
@@ -172,9 +169,9 @@ fn set_button_symbol(button: &objc2_app_kit::NSStatusBarButton, symbol_name: &st
     let name = NSString::from_str(symbol_name);
     match NSImage::imageWithSystemSymbolName_accessibilityDescription(&name, None) {
         Some(image) => button.setImage(Some(&image)),
-        None => crate::log::append(&format!(
-            "WARNING: SF Symbol '{symbol_name}' не найден в системе"
-        )),
+        None => log::warn!(
+            "SF Symbol '{symbol_name}' не найден в системе"
+        ),
     }
 }
 
@@ -195,7 +192,7 @@ fn set_button_blocked_icon(button: &objc2_app_kit::NSStatusBarButton) -> bool {
             true
         }
         None => {
-            crate::log::append("WARNING: blocked-иконка (blocked.png) не распарсилась");
+            log::warn!("blocked-иконка (blocked.png) не распарсилась");
             false
         }
     }

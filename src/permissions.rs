@@ -25,7 +25,7 @@ const TCCUTIL: &str = "/usr/bin/tccutil";
 /// Пауза в секундах между выходом Nook и его новым запуском.
 const RELAUNCH_DELAY: &str = "1";
 /// Совпадает с CFBundleIdentifier в Info.plist.
-const BUNDLE_ID: &str = "com.hypnosis.nook";
+pub const BUNDLE_ID: &str = "com.hypnosis.nook";
 
 #[derive(Clone, Copy)]
 enum Permission {
@@ -107,7 +107,7 @@ pub fn reset_all() {
             .args(["reset", permission.tcc_service(), BUNDLE_ID])
             .output();
         if !reset.is_ok_and(|output| output.status.success()) {
-            crate::log::append(&format!("permissions: сброс {} не удался", permission.tcc_service()));
+            log::warn!("сброс {} не удался", permission.tcc_service());
         }
     }
     NSUserDefaults::standardUserDefaults().removeObjectForKey(&NSString::from_str(GRANTED_VERSION_KEY));
@@ -119,14 +119,14 @@ pub fn relaunch_later() {
         .ok()
         .and_then(|exe| exe.ancestors().nth(3).map(|path| path.to_path_buf()));
     let Some(app) = app else {
-        crate::log::append("permissions: путь к Nook.app не найден — перезапуска не будет");
+        log::warn!("путь к Nook.app не найден — перезапуска не будет");
         return;
     };
     let relaunch = Command::new("/bin/sh")
         .args(["-c", "sleep \"$1\"; /usr/bin/open \"$0\"", &app.to_string_lossy(), RELAUNCH_DELAY])
         .spawn();
     if relaunch.is_err() {
-        crate::log::append("permissions: перезапуск не запустился");
+        log::warn!("перезапуск не запустился");
     }
 }
 

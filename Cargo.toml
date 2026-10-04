@@ -9,6 +9,8 @@ repository = "https://github.com/hypnosis/nook"
 readme = "README.md"
 
 [dependencies]
+log = "0.4"
+oslog = "0.2"
 objc2 = "0.6.4"
 block2 = "0.6"
 objc2-foundation = { version = "0.3.2", features = ["NSTimer", "NSDate", "NSLocale", "NSArray", "NSString", "NSData", "NSDictionary", "NSValue", "NSError", "NSEnumerator", "NSURL", "NSGeometry", "NSNotification", "NSUserDefaults", "NSIndexSet", "NSObjCRuntime", "NSDistributedNotificationCenter"] }
@@ -73,6 +75,3 @@ strip = true
 codegen-units = 1
 panic = "abort"
 
-[features]
-# Диагностический лог в /tmp/nook-debug.log.
-debug-log = []

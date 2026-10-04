@@ -10,8 +10,7 @@ BINARY_NAME="${SLUG}"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 
 echo "==> Building ${APP_NAME}..."
-# NOOK_DEBUG_LOG=1 — сборка с диагностическим логом в /tmp/nook-debug.log.
-cargo build ${NOOK_DEBUG_LOG:+--features debug-log}
+cargo build
 
 echo "==> Creating .app bundle structure..."
 mkdir -p "${APP_DIR}/Contents/MacOS"

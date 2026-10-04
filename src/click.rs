@@ -18,10 +18,7 @@ use objc2_application_services::{
 use objc2_core_foundation::{CFArray, CFDictionary, CFRetained, CFString, CFType, CGPoint, CGSize};
 use objc2_foundation::{NSDictionary, NSNumber, NSString};
 
-/// Насколько центр элемента Accessibility может отличаться от центра окна иконки, pt.
-// HARDCODE: допуск сопоставления иконки и таймаут опроса приложения; вынести в конфиг позже.
-const MATCH_TOLERANCE: f64 = 6.0;
-const AX_TIMEOUT: f32 = 0.1;
+use crate::tuning::{AX_TIMEOUT, MATCH_TOLERANCE};
 
 /// Иконка строки меню в Accessibility: приложение-владелец и сам элемент.
 struct AxItem {
@@ -110,7 +107,7 @@ pub fn owner_name(id: u32) -> Option<String> {
 /// поэтому поиск и нажатие идут в фоновом потоке.
 pub fn click_window(id: u32) {
     if !unsafe { AXIsProcessTrusted() } {
-        crate::log::append("click: нет права Accessibility — запрашиваю");
+        log::warn!("нет права Accessibility — запрашиваю");
         request_accessibility();
         return;
     }
@@ -127,7 +124,7 @@ pub fn click_window(id: u32) {
                 .map(|(_, item)| item)
         });
         let Some(item) = item else {
-            crate::log::append(&format!("click: для окна {id} иконки в AX нет"));
+            log::debug!("для окна {id} иконки в AX нет");
             return;
         };
         let result = unsafe {
@@ -135,10 +132,10 @@ pub fn click_window(id: u32) {
                 .perform_action(&CFString::from_static_str("AXPress"))
         };
         if result.0 != 0 {
-            crate::log::append(&format!(
-                "click: AXPress по окну {id} — ошибка {}",
+            log::warn!(
+                "AXPress по окну {id} — ошибка {}",
                 result.0
-            ));
+            );
         }
         CACHE
             .lock()

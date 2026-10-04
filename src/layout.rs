@@ -122,7 +122,7 @@ impl Layout {
 
     fn update(&mut self, panel: Vec<u32>, main: Vec<u32>) {
         if panel != self.panel || main != self.main {
-            crate::log::append(&format!("порядок: панель {panel:?}, основной ряд {main:?}"));
+            log::debug!("порядок: панель {panel:?}, основной ряд {main:?}");
             self.panel = panel;
             self.main = main;
         }

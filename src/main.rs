@@ -14,7 +14,7 @@ mod controller;
 mod divider;
 mod editor;
 mod layout;
-mod log;
+mod logging;
 mod login;
 mod menu;
 mod mover;
@@ -27,6 +27,7 @@ mod shroud;
 mod status_bar;
 mod strings;
 mod theme;
+mod tuning;
 mod ui_style;
 
 use objc2::rc::Retained;
@@ -37,7 +38,7 @@ use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSApplicationD
 use crate::controller::Controller;
 
 fn main() {
-    log::reset();
+    logging::init();
 
     let mtm = MainThreadMarker::new().expect("main должен идти на главном потоке");
     let app = NSApplication::sharedApplication(mtm);

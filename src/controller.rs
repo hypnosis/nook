@@ -37,50 +37,16 @@ use crate::panel::Panel;
 use crate::settings::Settings;
 use crate::status_bar::{
     self, StatusItems, ANCHOR_SYMBOL_BLOCKED, ANCHOR_SYMBOL_HIDDEN, ANCHOR_SYMBOL_SHOWN,
-    SPACER_WIDTH_SHOWN,
 };
 use crate::strings::{self, Lang};
-
-/// Запас сверх ширины экрана, чтобы гарантированно вытолкнуть крайние иконки.
-// HARDCODE: параметры ширины скрытия; вынести в конфиг позже.
-const HIDDEN_WIDTH_MARGIN: f64 = 200.0;
-const HIDDEN_WIDTH_MIN: f64 = 500.0;
-const HIDDEN_WIDTH_MAX: f64 = 4000.0;
-const SCREEN_WIDTH_FALLBACK: f64 = 1728.0;
-
-/// Интервал проверки размещения айтемов после старта. Размещение асинхронно;
-/// проверяем каждые 0.3с, пересоздавая застрявшие на x=0, пока оба не встанут.
-const PLACEMENT_CHECK_INTERVAL: f64 = 0.3;
-
-/// Максимум пересозданий одного айтема, если он застрял на x=0 (retry).
-const ANCHOR_MAX_RETRIES: u32 = 10;
-
-/// После стольких безуспешных проверок размещения — эскалация: пересоздать ОБА
-/// айтема.
-const PLACEMENT_ESCALATE_AFTER: u32 = 4;
-
-/// Полный потолок проверок размещения — затем таймер останавливается.
-const PLACEMENT_MAX_ATTEMPTS: u32 = 30;
+use crate::tuning::{
+    ANCHOR_MAX_RETRIES, BAR_POLL, DIVIDER_SETTLE_DELAY, HIDDEN_WIDTH_MARGIN, HIDDEN_WIDTH_MAX, HIDING_WIDTH_MIN,
+    MOVE_WATCHDOG, MOVE_WATCHDOG_POLL, NARROW_ITEM_WIDTH, PANEL_CAPTURE_DELAY, PANEL_REFRESH_INTERVAL,
+    PLACEMENT_CHECK_INTERVAL, PLACEMENT_ESCALATE_AFTER, PLACEMENT_MAX_ATTEMPTS, SCREEN_WIDTH_FALLBACK,
+};
 
 /// x айтема, которого macOS ещё не разместила в строке.
 const UNPLACED_X: f64 = 0.0;
-
-/// Пауза после раскрытия, чтобы окна иконок встали на места перед съёмкой.
-// HARDCODE: задержка съёмки иконок; вынести в конфиг позже.
-const PANEL_CAPTURE_DELAY: f64 = 0.3;
-/// Шаг опроса, вышел ли разделитель на экран после раскрытия.
-const PANEL_SETTLE_POLL: Duration = Duration::from_millis(5);
-/// Пауза, чтобы macOS разложила окна строки меню после создания разделителя.
-// HARDCODE: пауза после создания разделителя; вынести в конфиг позже.
-const DIVIDER_SETTLE_DELAY: f64 = 0.4;
-/// Перенос без единого шага дольше этого считается зависшим — мышь возвращается.
-const MOVE_WATCHDOG: f64 = 5.0;
-/// Как часто сторож проверяет, идёт ли перенос.
-const MOVE_WATCHDOG_POLL: f64 = 1.0;
-
-/// Как часто обновлять клоны, пока панель открыта.
-// HARDCODE: период обновления клонов; вынести в конфиг позже.
-const PANEL_REFRESH_INTERVAL: f64 = 2.0;
 
 /// Внутреннее состояние.
 /// - `items` появляются после запуска. `hidden`: текущий режим.
@@ -435,7 +401,7 @@ define_class!(
                 return;
             }
             let Some(divider) = self.find_divider_window() else {
-                crate::log::append("бросок: окна разделителя нет — плитка возвращается");
+                log::warn!("бросок: окна разделителя нет — плитка возвращается");
                 self.show_layout_in_editor();
                 return;
             };
@@ -460,11 +426,11 @@ define_class!(
             self.refresh_layout();
             {
                 let layout = self.ivars().layout.borrow();
-                crate::log::append(&format!(
+                log::info!(
                     "после броска: редактор {main:?}, строка {:?}{}",
                     layout.main(),
                     if layout.main() == main.as_slice() { "" } else { " — расходятся" }
-                ));
+                );
             }
             self.show_layout_in_editor();
             let _: () = unsafe { msg_send![self, onPanelCapture: std::ptr::null_mut::<AnyObject>()] };
@@ -478,7 +444,7 @@ define_class!(
                 return;
             }
             if crate::mover::is_stalled(Duration::from_secs_f64(MOVE_WATCHDOG)) {
-                crate::log::append("бросок: перенос завис — возвращаю мышь");
+                log::warn!("бросок: перенос завис — возвращаю мышь");
                 crate::mover::cancel();
                 self.give_back_mouse();
                 self.set_moving(false);
@@ -576,7 +542,7 @@ define_class!(
             self.ivars().placement_attempts.set(attempts);
             if attempts >= PLACEMENT_MAX_ATTEMPTS {
                 self.stop_placement_timer(timer);
-                crate::log::append("placement: лимит попыток исчерпан — сдаюсь (guard защитит)");
+                log::warn!("placement: лимит попыток исчерпан — сдаюсь (guard защитит)");
                 return;
             }
 
@@ -810,7 +776,7 @@ impl Controller {
     fn toggle(&self) {
         let items_ref = self.ivars().items.borrow();
         let Some(items) = items_ref.as_ref() else {
-            crate::log::append("toggle: айтемы ещё не созданы — игнор");
+            log::debug!("toggle: айтемы ещё не созданы — игнор");
             return;
         };
 
@@ -826,7 +792,7 @@ impl Controller {
         let (spacer_width, anchor_symbol) = if going_to_hide {
             (self.hidden_width(), ANCHOR_SYMBOL_HIDDEN)
         } else {
-            (SPACER_WIDTH_SHOWN, ANCHOR_SYMBOL_SHOWN)
+            (NARROW_ITEM_WIDTH, ANCHOR_SYMBOL_SHOWN)
         };
 
         if going_to_hide {
@@ -907,12 +873,12 @@ impl Controller {
         if !self.ivars().panel_restored.replace(true) {
             let saved = crate::settings::panel_order();
             self.ivars().layout.borrow_mut().restore_panel(&saved, crate::click::owner_name);
-            crate::log::append(&format!("панель: сохранённый порядок {saved:?}"));
+            log::info!("панель: сохранённый порядок {saved:?}");
             return;
         }
         if names != crate::settings::panel_order() {
             crate::settings::set_panel_order(&names);
-            crate::log::append(&format!("панель: записан порядок {names:?}"));
+            log::info!("панель: записан порядок {names:?}");
         }
     }
 
@@ -1082,7 +1048,7 @@ impl Controller {
     /// Ставит разделителю ширину, при которой иконки панели уходят внутрь экрана.
     fn widen_divider(&self) {
         let Some(divider_id) = self.ivars().divider_window.get() else {
-            crate::log::append("divider: окно не найдено — ширину не меняю");
+            log::debug!("divider: окно не найдено — ширину не меняю");
             return;
         };
         let width = crate::divider::hiding_width(divider_id);
@@ -1107,7 +1073,7 @@ impl Controller {
             return;
         }
         let wide = self.ivars().divider.borrow().as_ref().map(|divider| divider.length());
-        let target = self.ivars().divider_window.get().zip(wide).filter(|(_, wide)| *wide > crate::divider::NARROW_WIDTH);
+        let target = self.ivars().divider_window.get().zip(wide).filter(|(_, wide)| *wide > NARROW_ITEM_WIDTH);
         if let Some(((divider_id, wide), gap)) = target.zip(self.notch_gap()) {
             crate::reveal::enter(divider_id, gap, wide);
         }
@@ -1129,10 +1095,10 @@ impl Controller {
                 crate::capture::icon_layout().iter().any(|window| Some(window.id) == divider_id && window.x >= 0.0)
             };
             while divider_id.is_some() && !divider_shown() && Instant::now() < deadline {
-                thread::sleep(PANEL_SETTLE_POLL);
+                thread::sleep(BAR_POLL);
             }
             crate::mover::wait_until_still();
-            crate::log::append(&format!("панель: строка встала за {} мс", started.elapsed().as_millis()));
+            log::debug!("панель: строка встала за {} мс", started.elapsed().as_millis());
             DispatchQueue::main().exec_async(|| {
                 let mtm = MainThreadMarker::new().expect("main queue");
                 if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
@@ -1155,7 +1121,7 @@ impl Controller {
         };
         let height = crate::capture::icon_layout().first()?.height;
         if notch_right <= 0.0 || spacer_x <= notch_right {
-            crate::log::append("reveal: участка у чёлки нет");
+            log::debug!("reveal: участка у чёлки нет");
             return None;
         }
         Some(CGRect::new(CGPoint::new(notch_right, 0.0), CGSize::new(spacer_x - notch_right, height)))
@@ -1203,17 +1169,17 @@ impl Controller {
 
         match (spacer_x, anchor_x) {
             (Some(sx), Some(ax)) => {
-                // Оба должны быть размещены (x>0) и спейсер строго левее якоря.
-                let placed = sx > 0.0 && ax > 0.0;
+                // Оба размещены, и спейсер строго левее якоря.
+                let placed = sx > UNPLACED_X && ax > UNPLACED_X;
                 let ok = placed && sx < ax;
                 if !ok {
-                    let why = if placed { "правее якоря" } else { "не размещён (x=0)" };
-                    crate::log::append(&format!("guard: spacer.x={sx} anchor.x={ax} — спейсер {why}"));
+                    let why = if placed { "правее якоря" } else { "не размещён" };
+                    log::debug!("guard: spacer.x={sx} anchor.x={ax} — спейсер {why}");
                 }
                 ok
             }
             _ => {
-                crate::log::append("guard: координаты ещё недоступны → отказ (безопасно)");
+                log::debug!("guard: координаты ещё недоступны → отказ (безопасно)");
                 false
             }
         }
@@ -1245,7 +1211,7 @@ impl Controller {
     /// Показывает знак блокировки на якоре и оставляет всё как есть.
     fn show_blocked(&self, items: &StatusItems) {
         status_bar::set_anchor_symbol(items, self.mtm(), ANCHOR_SYMBOL_BLOCKED);
-        crate::log::append("СТОП: спейсер не левее якоря — скрытие заблокировано, показываю ⚠");
+        log::warn!("СТОП: спейсер не левее якоря — скрытие заблокировано, показываю ⚠");
     }
 
     /// Ширина спейсера в скрытом состоянии: ширина экрана + запас, ограниченная.
@@ -1253,7 +1219,7 @@ impl Controller {
         let screen_width = NSScreen::mainScreen(self.mtm())
             .map(|screen| screen.frame().size.width)
             .unwrap_or(SCREEN_WIDTH_FALLBACK);
-        (screen_width + HIDDEN_WIDTH_MARGIN).clamp(HIDDEN_WIDTH_MIN, HIDDEN_WIDTH_MAX)
+        (screen_width + HIDDEN_WIDTH_MARGIN).clamp(HIDING_WIDTH_MIN, HIDDEN_WIDTH_MAX)
     }
 }
 

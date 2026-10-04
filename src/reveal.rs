@@ -5,7 +5,7 @@
 
 use std::cell::RefCell;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use dispatch2::DispatchQueue;
 use objc2::runtime::AnyObject;
@@ -15,16 +15,9 @@ use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGImage;
 
 use crate::shroud::Shroud;
-
-// HARDCODE: тайминги узкого режима; вынести в конфиг позже.
-const PAINT_DELAY: Duration = Duration::from_millis(20);
-const LAYOUT_POLL: Duration = Duration::from_millis(5);
-const LAYOUT_TIMEOUT: Duration = Duration::from_millis(500);
-/// Иконка, уходящая обратно в спрятанные, ещё гаснет после того, как встала на место.
-const FADE_DELAY: Duration = Duration::from_millis(150);
-const MENU_POLL: Duration = Duration::from_millis(50);
-const MENU_APPEAR_TIMEOUT: Duration = Duration::from_millis(1500);
-const MENU_MAX_OPEN: Duration = Duration::from_secs(120);
+use crate::tuning::{
+    BAR_POLL, FADE_DELAY, LAYOUT_TIMEOUT, MENU_APPEAR_TIMEOUT, MENU_MAX_OPEN, MENU_POLL, NARROW_ITEM_WIDTH, PAINT_DELAY,
+};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Stage {
@@ -87,7 +80,7 @@ pub fn enter(divider_id: u32, gap: CGRect, wide: f64) {
     thread::spawn(move || {
         let started = Instant::now();
         let Some(image) = crate::capture::screen_rect(gap) else {
-            crate::log::append("reveal: снимка полосы нет — узкий режим не включаю");
+            log::debug!("снимка полосы нет — узкий режим не включаю");
             on_main(move |_| {
                 MODE.with_borrow_mut(|mode| {
                     if mode.generation == generation {
@@ -109,7 +102,7 @@ pub fn enter(divider_id: u32, gap: CGRect, wide: f64) {
         thread::sleep(PAINT_DELAY);
         on_main(move |mtm| {
             if MODE.with_borrow(|mode| mode.generation == generation) {
-                set_divider(mtm, crate::divider::NARROW_WIDTH);
+                set_divider(mtm, NARROW_ITEM_WIDTH);
             }
         });
         wait_divider(divider_id, true);
@@ -130,7 +123,7 @@ pub fn enter(divider_id: u32, gap: CGRect, wide: f64) {
                 press_now(icon_id, clicked);
             }
         });
-        crate::log::append(&format!("reveal: узкий режим готов за {} мс", started.elapsed().as_millis()));
+        log::debug!("узкий режим готов за {} мс", started.elapsed().as_millis());
     });
 }
 
@@ -268,15 +261,15 @@ pub fn wait_divider(divider_id: u32, narrow: bool) {
         if window.is_some_and(|window| crate::divider::is_narrow(&window) == narrow) {
             return;
         }
-        thread::sleep(LAYOUT_POLL);
+        thread::sleep(BAR_POLL);
     }
-    crate::log::append(&format!("reveal: разделитель не стал {}", if narrow { "узким" } else { "широким" }));
+    log::debug!("разделитель не стал {}", if narrow { "узким" } else { "широким" });
 }
 
 /// Ждёт, пока у приложения `pid` появится новое окно (меню или поповер) и закроется.
 fn wait_menu_closed(pid: Option<i32>, windows_before: &[u32], clicked: Instant) {
     let Some(pid) = pid else {
-        crate::log::append("reveal: процесс иконки неизвестен — жду только появления");
+        log::debug!("процесс иконки неизвестен — жду только появления");
         thread::sleep(MENU_APPEAR_TIMEOUT);
         return;
     };
@@ -286,16 +279,16 @@ fn wait_menu_closed(pid: Option<i32>, windows_before: &[u32], clicked: Instant) 
             break id;
         }
         if Instant::now() > appear_deadline {
-            crate::log::append("reveal: окно меню не появилось");
+            log::warn!("окно меню не появилось");
             return;
         }
         thread::sleep(MENU_POLL);
     };
-    crate::log::append(&format!("reveal: клик → меню {} мс", clicked.elapsed().as_millis()));
+    log::debug!("клик → меню {} мс", clicked.elapsed().as_millis());
     let close_deadline = Instant::now() + MENU_MAX_OPEN;
     while crate::capture::onscreen_windows_of(pid).contains(&menu) {
         if Instant::now() > close_deadline {
-            crate::log::append("reveal: меню открыто слишком долго — больше не жду");
+            log::debug!("меню открыто слишком долго — больше не жду");
             return;
         }
         thread::sleep(MENU_POLL);

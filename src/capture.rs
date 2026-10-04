@@ -1,7 +1,6 @@
 //! Снимки иконок строки меню для панели и редактора.
 
 use std::sync::{mpsc, Arc, Mutex, PoisonError};
-use std::time::Duration;
 
 use block2::RcBlock;
 use dispatch2::DispatchQueue;
@@ -19,15 +18,12 @@ use objc2_screen_capture_kit::{
     SCContentFilter, SCScreenshotManager, SCShareableContent, SCStreamConfiguration,
 };
 
+use crate::tuning::{MAX_ICON_HEIGHT, POSITION_TOLERANCE, SHOT_TIMEOUT};
+
 const CONTROL_CENTER_BUNDLE: &str = "com.apple.controlcenter";
 /// Окно системного индикатора камеры, микрофона и записи экрана: его место решает macOS,
 /// и появляется оно само, пока идёт запись — в том числе наши снимки.
 const PRIVACY_INDICATOR: &str = "AudioVideoModule";
-// HARDCODE: предел высоты окна иконки строки меню и ожидание снимка; вынести в конфиг позже.
-const MAX_ICON_HEIGHT: f64 = 50.0;
-const SHOT_TIMEOUT: Duration = Duration::from_secs(2);
-/// Допуск сравнения координат окон строки меню, pt.
-pub const POSITION_TOLERANCE: f64 = 1.0;
 
 /// Окно иконки строки меню: номер CG-окна, имя, левый край и размер в pt, нарисовано ли.
 pub struct IconWindow {
@@ -120,7 +116,7 @@ fn capture_windows(content: &SCShareableContent, windows: &[IconWindow], receive
             .iter()
             .find(|w| unsafe { w.windowID() } == icon.id)
         else {
-            crate::log::append(&format!("capture: окна {} нет в ScreenCaptureKit", icon.id));
+            log::debug!("окна {} нет в ScreenCaptureKit", icon.id);
             finish_one(&results, index, None, receiver);
             continue;
         };
@@ -211,7 +207,7 @@ fn deliver(shots: Vec<Shot>, receiver: Receiver) {
 /// Окна иконок ControlCenter слева направо, которые проходят `keep`.
 fn icon_windows(keep: impl Fn(&IconWindow) -> bool) -> Vec<IconWindow> {
     let Some(owner_pid) = control_center_pid() else {
-        crate::log::append("capture: ControlCenter не найден");
+        log::warn!("ControlCenter не найден");
         return Vec::new();
     };
     let Some(list) = window_list(CGWindowListOption::OptionAll, kCGNullWindowID) else {
@@ -387,5 +383,5 @@ fn log_error(what: &str, error: *mut NSError) {
     let text = unsafe { error.as_ref() }
         .map(|e| e.localizedDescription().to_string())
         .unwrap_or_else(|| "без описания".into());
-    crate::log::append(&format!("capture: {what}: ошибка {text}"));
+    log::warn!("{what}: ошибка {text}");
 }

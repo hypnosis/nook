@@ -26,6 +26,7 @@ use crate::ui_style::{self, button, grid, label, wrapping_label, SPACING};
 const SHOW_PANEL_KEY: &str = "showPanel";
 const AUTOMATIC_LAYOUT_KEY: &str = "automaticLayout";
 const PANEL_ORDER_KEY: &str = "panelOrder";
+const DEBUG_LOG_KEY: &str = "debugLog";
 const LAYOUT_PANE: usize = 1;
 
 // HARDCODE: размеры окна настроек; вынести в конфиг позже.
@@ -65,6 +66,11 @@ pub fn automatic_layout() -> bool {
 pub fn set_automatic_layout(on: bool) {
     NSUserDefaults::standardUserDefaults()
         .setBool_forKey(on, &NSString::from_str(AUTOMATIC_LAYOUT_KEY));
+}
+
+/// Подробный лог: включается только из Терминала через `defaults write`, в интерфейсе его нет.
+pub fn debug_log() -> bool {
+    NSUserDefaults::standardUserDefaults().boolForKey(&NSString::from_str(DEBUG_LOG_KEY))
 }
 
 /// Сохранённый порядок панели: имена приложений её иконок слева направо.

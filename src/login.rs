@@ -42,6 +42,6 @@ pub fn toggle() {
     };
 
     if let Err(error) = result {
-        crate::log::append(&format!("автозапуск: ошибка — {error:?}"));
+        log::warn!("автозапуск: ошибка — {error:?}");
     }
 }

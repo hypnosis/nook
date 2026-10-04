@@ -21,21 +21,11 @@ use objc2_core_graphics::{
 };
 
 use crate::capture::IconWindow;
+use crate::tuning::{
+    BAR_POLL, DROP_NUDGE, DROP_OFFSET, FAST_STEP, POSITION_TOLERANCE, SAFE_STEP, SETTLE_TIMEOUT, STILL_POLL, STILL_READS,
+    STILL_TIMEOUT, TARGETED_TIMEOUT,
+};
 
-// HARDCODE: паузы между событиями переноса; вынести в конфиг позже.
-const FAST_STEP: Duration = Duration::from_millis(12);
-const SAFE_STEP: Duration = Duration::from_millis(50);
-const SETTLE_TIMEOUT: Duration = Duration::from_millis(250);
-const SETTLE_POLL: Duration = Duration::from_millis(5);
-const STILL_POLL: Duration = Duration::from_millis(10);
-/// Сколько замеров подряд без изменений считать концом анимации.
-const STILL_READS: u32 = 2;
-const STILL_TIMEOUT: Duration = Duration::from_millis(600);
-/// Насколько заходить за край соседа, чтобы встать перед ним или после него.
-const DROP_OFFSET: f64 = 2.0;
-
-/// Сколько ждать ответа иконки на нажатие или отпускание, адресованное окну.
-const TARGETED_TIMEOUT: Duration = Duration::from_millis(150);
 /// Поле события с номером окна; в публичных заголовках его нет.
 const WINDOW_ID_FIELD: CGEventField = CGEventField(0x33);
 
@@ -107,7 +97,7 @@ pub fn allow_cursor_hiding_in_background() {
         CGSSetConnectionProperty(connection, connection, &key, enabled)
     };
     if error != 0 {
-        crate::log::append(&format!("mover: SetsCursorInBackground не включился ({error})"));
+        log::warn!("SetsCursorInBackground не включился ({error})");
     }
 }
 
@@ -159,7 +149,7 @@ pub fn move_one(id: u32, before: Option<u32>, after: Option<u32>, notch_right: f
         OWN_RUN.set(run);
         let started = Instant::now();
         let moved = if stuck().contains(&id) {
-            crate::log::append(&format!("mover: окно {id} не переносится — пропускаю"));
+            log::debug!("окно {id} не переносится — пропускаю");
             false
         } else {
             crate::click::remember_owners_now(&[id]);
@@ -173,11 +163,11 @@ pub fn move_one(id: u32, before: Option<u32>, after: Option<u32>, notch_right: f
             }
             matches!(outcome, Outcome::Moved | Outcome::Skipped)
         };
-        crate::log::append(&format!(
-            "mover: окно {id} {} за {} мс",
+        log::info!(
+            "окно {id} {} за {} мс",
             if moved { "перенесено" } else { "не перенесено" },
             started.elapsed().as_millis()
-        ));
+        );
         *last_step() = None;
         DispatchQueue::main().exec_async(move || {
             let mtm = MainThreadMarker::new().expect("main queue");
@@ -261,13 +251,13 @@ fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>, notch_right: f
                 Method::Targeted => 0,
                 Method::Drag(..) => wait_window_still(id).as_millis(),
             };
-            crate::log::append(&format!(
-                "mover: окно {id} перенесено способом {method} за {moved_in} мс, замерло за {still_in} мс"
-            ));
+            log::debug!(
+                "окно {id} перенесено способом {method} за {moved_in} мс, замерло за {still_in} мс"
+            );
             return Outcome::Moved;
         }
     }
-    crate::log::append(&format!("mover: окно {id} не сдвинулось"));
+    log::debug!("окно {id} не сдвинулось");
     if can_drag {
         Outcome::Stuck
     } else {
@@ -284,8 +274,8 @@ fn settled(id: u32, start_x: f64) -> bool {
 fn wait_moved(id: u32, start_x: f64, timeout: Duration) -> Option<f64> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        thread::sleep(SETTLE_POLL);
-        if let Some(x) = window_x(id).filter(|x| (x - start_x).abs() >= crate::capture::POSITION_TOLERANCE) {
+        thread::sleep(BAR_POLL);
+        if let Some(x) = window_x(id).filter(|x| (x - start_x).abs() >= POSITION_TOLERANCE) {
             return Some(x);
         }
     }
@@ -326,10 +316,10 @@ fn target_points(item: &IconWindow, destination: Destination, notch_right: f64) 
             if item.x + item.width <= target.x {
                 end.x -= item.width;
                 if end.x <= notch_right {
-                    end.x = if notch_right + 1.0 < target.x { notch_right + 1.0 } else { target.x + DROP_OFFSET };
+                    end.x = if notch_right + DROP_NUDGE < target.x { notch_right + DROP_NUDGE } else { target.x + DROP_OFFSET };
                 }
             } else {
-                start.x -= 1.0;
+                start.x -= DROP_NUDGE;
             }
             (start, end)
         }
@@ -339,7 +329,7 @@ fn target_points(item: &IconWindow, destination: Destination, notch_right: f64) 
             if item.x <= target.x + target.width {
                 end.x -= item.width;
             } else {
-                start.x += 1.0;
+                start.x += DROP_NUDGE;
             }
             (start, end)
         }
@@ -358,10 +348,10 @@ fn press_and_release(item: &IconWindow, destination: Destination, notch_right: f
     };
     let pid = crate::click::owner_pid(item.id);
     let (start, end) = target_points(item, destination, notch_right);
-    crate::log::append(&format!(
-        "mover: окно {} нажатие {:.0}, отпускание {:.0}, сосед {} x={:.0}, чёлка до {notch_right:.0}",
+    log::debug!(
+        "окно {} нажатие {:.0}, отпускание {:.0}, сосед {} x={:.0}, чёлка до {notch_right:.0}",
         item.id, start.x, end.x, target.id, target.x
-    ));
+    );
     post_to_window(CGEventType::LeftMouseDown, start, item.id, pid, CGEventFlags::MaskCommand);
     let lifted_x = wait_moved(item.id, item.x, TARGETED_TIMEOUT);
     // Двойное отпускание: одиночное на Tahoe иногда оставляет иконку зажатой.
@@ -370,11 +360,11 @@ fn press_and_release(item: &IconWindow, destination: Destination, notch_right: f
     }
     let moved = wait_moved(item.id, item.x, TARGETED_TIMEOUT).is_some();
     if !moved {
-        crate::log::append(&format!(
-            "mover: окно {} не взялось по адресу (процесс {pid:?}, нажатие {})",
+        log::debug!(
+            "окно {} не взялось по адресу (процесс {pid:?}, нажатие {})",
             item.id,
             if lifted_x.is_some() { "сдвинуло" } else { "не сдвинуло" }
-        ));
+        );
     }
     moved
 }
@@ -418,7 +408,7 @@ pub fn wait_until_still() {
             last = now;
         }
     }
-    crate::log::append("mover: строка меню не успокоилась — считаю по последнему замеру");
+    log::debug!("строка меню не успокоилась — считаю по последнему замеру");
 }
 
 /// Cmd+drag: нажать, (провести через середину,) довести до цели и отпустить.
