@@ -27,10 +27,11 @@ struct Tile {
     image: Retained<NSImageView>,
 }
 
-/// Перетаскиваемая иконка: за какую точку её взяли и куда она встанет — ряд и место.
+/// Перетаскиваемая иконка: за какую точку её взяли, откуда и куда она встанет — ряд и место.
 struct Drag {
     tile: Tile,
     grab: NSPoint,
+    origin: (usize, usize),
     target: (usize, usize),
 }
 
@@ -42,8 +43,6 @@ struct Slot {
 
 pub struct EditorIvars {
     rows: RefCell<[Vec<Tile>; 2]>,
-    /// Порядок строки меню из последнего снимка: (панель, основной ряд).
-    loaded: RefCell<(Vec<u32>, Vec<u32>)>,
     titles: [Retained<NSTextField>; 2],
     boxes: [Retained<NSBox>; 2],
     row_frames: RefCell<[NSRect; 2]>,
@@ -111,7 +110,8 @@ define_class!(
             tile.image.removeFromSuperview();
             self.addSubview(&tile.image);
             let grab = NSPoint::new(point.x - frame.origin.x, point.y - frame.origin.y);
-            *self.ivars().drag.borrow_mut() = Some(Drag { tile, grab, target: (row, position) });
+            let origin = (row, position);
+            *self.ivars().drag.borrow_mut() = Some(Drag { tile, grab, origin, target: origin });
         }
 
         /// Иконка идёт за мышью, остальные расступаются там, куда она встанет.
@@ -137,7 +137,7 @@ define_class!(
             let id = drag.tile.id;
             self.ivars().rows.borrow_mut()[row].insert(position, drag.tile);
             self.layout_tiles(true);
-            if self.has_changes() {
+            if drag.target != drag.origin {
                 self.send_to_strip(id);
             }
         }
@@ -160,7 +160,6 @@ impl EditorView {
         });
         let this = mtm.alloc().set_ivars(EditorIvars {
             rows: RefCell::new([Vec::new(), Vec::new()]),
-            loaded: RefCell::new((Vec::new(), Vec::new())),
             titles,
             boxes,
             row_frames: RefCell::new([NSRect::ZERO; 2]),
@@ -184,32 +183,26 @@ impl EditorView {
         this
     }
 
-    /// Картинки иконок и порядок строки меню: `panel` и `main` слева направо.
-    /// Неприменённый порядок сохраняется: обновляются картинки, новые иконки встают
-    /// на свои места в строке меню, пропавшие уходят. Иконка, чей снимок не удался,
-    /// остаётся с прежней картинкой.
+    /// Картинки иконок `images` для окон `ids` и порядок реестра: `panel` и `main` слева направо.
+    /// Иконка, чей снимок не удался, остаётся с прежней картинкой.
     pub fn set_icons(&self, images: &NSArray<NSImage>, ids: &NSArray<NSNumber>, panel: &[u32], main: &[u32]) {
         let shots: Vec<(u32, Retained<NSImage>)> =
             ids.iter().map(|id| id.unsignedIntValue()).zip(images.iter()).collect();
-        let tiled: Vec<u32> = self.ivars().rows.borrow().iter().flatten().map(|tile| tile.id).collect();
-        let shown = |ids: &[u32]| -> Vec<u32> {
-            ids.iter()
-                .copied()
-                .filter(|id| shots.iter().any(|(shot, _)| shot == id) || tiled.contains(id))
-                .collect()
-        };
-        let system = [shown(main), shown(panel)];
-        let order = if self.has_changes() {
-            let (panel, main) = self.order();
-            merged_order([main, panel], &system)
-        } else {
-            system.clone()
-        };
+        self.arrange(&shots, panel, main);
+    }
 
+    /// Плитки встают в порядке реестра: брошенная, но не перенесённая плитка возвращается.
+    pub fn show(&self, panel: &[u32], main: &[u32]) {
+        self.arrange(&[], panel, main);
+    }
+
+    /// Ряды по `panel` и `main` с картинками из `shots`; иконка без картинки и без плитки пропускается.
+    fn arrange(&self, shots: &[(u32, Retained<NSImage>)], panel: &[u32], main: &[u32]) {
+        let order = [main, panel];
         let mut old: Vec<Tile> = self.ivars().rows.borrow_mut().iter_mut().flat_map(std::mem::take).collect();
         let mut rows: [Vec<Tile>; 2] = [Vec::new(), Vec::new()];
         for (row, ids) in order.iter().enumerate() {
-            for id in ids {
+            for id in ids.iter() {
                 let image = shots.iter().find(|(shot, _)| shot == id).map(|(_, image)| image);
                 let tile = match (old.iter().position(|tile| tile.id == *id), image) {
                     (Some(index), image) => {
@@ -229,8 +222,6 @@ impl EditorView {
             tile.image.removeFromSuperview();
         }
         *self.ivars().rows.borrow_mut() = rows;
-        let [main, panel] = system;
-        *self.ivars().loaded.borrow_mut() = (panel, main);
         self.layout_tiles(false);
     }
 
@@ -256,16 +247,6 @@ impl EditorView {
             let delegate: &AnyObject = delegate.as_ref();
             let _: () = unsafe { msg_send![delegate, onTileDropped: id] };
         }
-    }
-
-    /// Порядок отправлен в строку меню: следующий снимок покажет её как есть.
-    pub fn mark_applied(&self) {
-        *self.ivars().loaded.borrow_mut() = self.order();
-    }
-
-    /// Порядок в редакторе отличается от строки меню из последнего снимка.
-    fn has_changes(&self) -> bool {
-        self.order() != *self.ivars().loaded.borrow()
     }
 
     fn make_tile(&self, id: u32, image: &NSImage) -> Tile {
@@ -368,23 +349,6 @@ impl EditorView {
     fn location(&self, event: &NSEvent) -> NSPoint {
         self.convertPoint_fromView(event.locationInWindow(), None)
     }
-}
-
-/// Неприменённый порядок `user` поверх свежей строки меню `system`: пропавшие иконки
-/// уходят, новые встают на своё место в ряду строки меню.
-fn merged_order(user: [Vec<u32>; 2], system: &[Vec<u32>; 2]) -> [Vec<u32>; 2] {
-    let fresh: Vec<u32> = system.iter().flatten().copied().collect();
-    let known: Vec<u32> = user.iter().flatten().copied().collect();
-    let mut rows = user.map(|ids| ids.into_iter().filter(|id| fresh.contains(id)).collect::<Vec<_>>());
-    for (row, ids) in system.iter().enumerate() {
-        for (index, id) in ids.iter().enumerate() {
-            if !known.contains(id) {
-                let at = index.min(rows[row].len());
-                rows[row].insert(at, *id);
-            }
-        }
-    }
-    rows
 }
 
 /// Места иконок шириной `widths` слева направо: не влезшая в `width` переносится

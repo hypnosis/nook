@@ -31,7 +31,7 @@ use crate::strings::{self, Lang};
 
 /// Стабильные имена автосохранения позиций (Cmd+drag переживает перезапуск).
 const ANCHOR_AUTOSAVE: &str = "nook-anchor";
-const SPACER_AUTOSAVE: &str = "nook-spacer";
+pub const SPACER_AUTOSAVE: &str = "nook-spacer";
 
 /// Ширина спейсера в показанном состоянии: иконка cutter видна и кликабельна.
 // HARDCODE: ширина спейсера показанного; вынести в конфиг позже.

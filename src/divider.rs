@@ -7,12 +7,11 @@
 use objc2::rc::Retained;
 use objc2::{AnyThread, MainThreadMarker};
 use objc2_app_kit::{NSImage, NSStatusBar, NSStatusItem};
-use objc2_foundation::{NSSize, NSString, NSUserDefaults};
+use objc2_foundation::{NSSize, NSString};
 
 use crate::capture::IconWindow;
 
-const AUTOSAVE: &str = "nook-divider";
-const ENABLED_KEY: &str = "panelDividerEnabled";
+pub const AUTOSAVE: &str = "nook-divider";
 
 // HARDCODE: геометрия разделителя; вынести в конфиг позже.
 pub const NARROW_WIDTH: f64 = 12.0;
@@ -25,21 +24,10 @@ const MIN_HIDING_WIDTH: f64 = 500.0;
 /// Окно узкого разделителя не шире этого. Виден он может и не быть: при длинном
 /// основном ряде он стоит под чёлкой.
 const NARROW_WINDOW_MAX: f64 = 40.0;
-/// Сохранённый macOS отступ больше расстояния до правого края окна на столько.
-const POSITION_SLACK: f64 = 2.0;
 
 /// Разделитель с окном `window` узкий: иконки левее него стоят в строке по порядку.
 pub fn is_narrow(window: &IconWindow) -> bool {
     window.width <= NARROW_WINDOW_MAX
-}
-
-/// Есть ли иконки в панели — тогда разделитель создаётся при запуске.
-pub fn is_enabled() -> bool {
-    NSUserDefaults::standardUserDefaults().boolForKey(&NSString::from_str(ENABLED_KEY))
-}
-
-pub fn set_enabled(on: bool) {
-    NSUserDefaults::standardUserDefaults().setBool_forKey(on, &NSString::from_str(ENABLED_KEY));
 }
 
 /// Узкий разделитель; место в строке macOS восстанавливает по `AUTOSAVE`.
@@ -57,13 +45,6 @@ pub fn create(mtm: MainThreadMarker) -> Retained<NSStatusItem> {
 
 pub fn remove(item: &NSStatusItem) {
     NSStatusBar::systemStatusBar().removeStatusItem(item);
-}
-
-/// Место, куда macOS поставит следующий созданный разделитель: правым краем на `right_edge`
-/// (координаты экрана шириной `screen_width`). macOS хранит место как отступ от правого края.
-pub fn set_place(right_edge: f64, screen_width: f64) {
-    let key = NSString::from_str(&format!("NSStatusItem Preferred Position {AUTOSAVE}"));
-    NSUserDefaults::standardUserDefaults().setDouble_forKey(screen_width - right_edge + POSITION_SLACK, &key);
 }
 
 /// Ширина, при которой разделитель (окно `divider_id`) прячет иконки левее себя,

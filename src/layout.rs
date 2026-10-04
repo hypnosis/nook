@@ -1,15 +1,16 @@
-//! Порядок иконок строки меню — один на всё приложение: панель и редактор строятся из него.
+//! Порядок иконок строки меню — один реестр на всё приложение: панель и редактор строятся из него.
 
-use crate::capture::{self, POSITION_TOLERANCE};
+use crate::capture::IconWindow;
 
-/// Иконки левее ≡◂ слева направо, как они должны стоять: панель — левее разделителя,
-/// основной ряд — правее. Порядок задают первое чтение строки и «Применить»; строка меню
-/// только сообщает, какие иконки в каком ряду есть. Пока идёт «Применить», порядок замирает.
+/// Иконки левее ≡◂ слева направо: панель — левее разделителя, основной ряд — правее.
+/// Ряд иконки и порядок нарисованных иконок задаёт строка меню. Порядок ненарисованных
+/// (иконки панели, иконки под чёлкой) строка не показывает честно — он держится реестром
+/// и меняется бросками в редакторе. Пока идёт перенос, реестр со строкой не сверяется.
 #[derive(Default)]
 pub struct Layout {
     panel: Vec<u32>,
     main: Vec<u32>,
-    applying: bool,
+    moving: bool,
     /// Ручной порядок, отложенный на время автоматического расположения.
     manual: Option<(Vec<u32>, Vec<u32>)>,
 }
@@ -23,17 +24,12 @@ impl Layout {
         &self.main
     }
 
-    pub fn is_applying(&self) -> bool {
-        self.applying
+    pub fn is_moving(&self) -> bool {
+        self.moving
     }
 
-    /// Начало «Применить»: порядок не читается до `end_apply`.
-    pub fn begin_apply(&mut self) {
-        self.applying = true;
-    }
-
-    pub fn end_apply(&mut self) {
-        self.applying = false;
+    pub fn set_moving(&mut self, moving: bool) {
+        self.moving = moving;
     }
 
     /// Включено автоматическое расположение: ручной порядок откладывается до выключения.
@@ -50,69 +46,62 @@ impl Layout {
         }
     }
 
-    /// Порядок, который поставило «Применить».
+    /// Порядок после удачного броска в редакторе.
     pub fn set(&mut self, panel: &[u32], main: &[u32]) {
         self.update(panel.to_vec(), main.to_vec());
     }
 
-    /// Сверяет порядок со строкой меню: известные иконки остаются в своём ряду и на своём
-    /// месте (при `automatic` ряд — где стоит), новые встают в конец ряда, где стоят,
-    /// пропавшие убираются; при `automatic` основной ряд — как стоит. Порядок пуст —
-    /// берётся как стоит. `divider` — окно разделителя панели (None — его нет), `ignore` —
-    /// окно убранного разделителя, которое ещё не исчезло; `spacer_x` — левый край ≡◂.
-    /// Широкий разделитель прячет иконки панели, основной ряд остаётся виден; при узком
-    /// панель — всё левее него. `automatic` — разделителя нет, и панель — всё, что macOS
-    /// не уместила в строку. Окна разделителя нет, узкий спрятан или левее ≡◂ ничего
-    /// не нашлось — строка не прочитана. Возвращает, прочитана ли она.
-    pub fn refresh(&mut self, divider: Option<u32>, ignore: Option<u32>, spacer_x: f64, automatic: bool) -> bool {
-        if self.applying {
+    /// Сверяет реестр со строкой `windows` (окна иконок слева направо). Пропавшие иконки
+    /// уходят; новые и сменившие ряд встают сразу за ближайшим соседом слева по строке;
+    /// нарисованные иконки ряда занимают свои места в порядке строки. Ряд — сторона
+    /// разделителя; при `automatic` разделителя нет, и в панели всё, что macOS не нарисовала.
+    /// Строка свёрнута, разделителя нет или он узкий, идёт перенос — не сверяет и возвращает `false`.
+    pub fn sync(&mut self, windows: &[IconWindow], automatic: bool) -> bool {
+        if self.moving {
             return false;
         }
-        let windows = capture::icon_layout();
-        let divider_window = match divider {
-            Some(id) => match windows.iter().find(|window| window.id == id) {
-                Some(window) => Some(window),
-                None => return false,
-            },
-            None => None,
+        let Some(spacer) = windows.iter().find(|window| window.name == crate::status_bar::SPACER_AUTOSAVE) else {
+            return false;
         };
-        let narrow_x = divider_window.filter(|window| crate::divider::is_narrow(window)).map(|window| window.x);
-        if narrow_x.is_some() && divider_window.is_some_and(|window| !window.onscreen) {
+        if !spacer.onscreen {
             return false;
         }
-        let mut panel = Vec::new();
-        let mut main = Vec::new();
-        for window in windows
-            .iter()
-            .filter(|window| {
-                window.x < spacer_x - POSITION_TOLERANCE && Some(window.id) != divider && Some(window.id) != ignore
-            })
-        {
-            let in_panel = match narrow_x {
-                Some(x) => capture::is_panel_icon(window, x),
-                None => (divider.is_some() || automatic) && !window.onscreen,
-            };
-            if in_panel {
-                panel.push(window.id);
-            } else {
-                main.push(window.id);
-            }
-        }
-        if panel.is_empty() && main.is_empty() {
-            return false;
-        }
-        let (panel, main) = if automatic {
-            // Набор панели решает macOS: иконка переходит в тот ряд, где стоит. Основной
-            // ряд виден, его порядок меняют перетаскиванием в строке.
-            (keep_order(&self.panel, &panel.clone(), &self.panel, panel), main)
+        let divider = if automatic {
+            None
         } else {
-            let present: Vec<u32> = panel.iter().chain(&main).copied().collect();
-            let known: Vec<u32> = self.panel.iter().chain(&self.main).copied().collect();
-            (
-                keep_order(&self.panel, &present, &known, panel),
-                keep_order(&self.main, &present, &known, main),
-            )
+            match windows.iter().find(|window| window.name == crate::divider::AUTOSAVE) {
+                Some(divider) if !crate::divider::is_narrow(divider) => Some(divider),
+                _ => return false,
+            }
         };
+        let icons: Vec<&IconWindow> = windows
+            .iter()
+            .filter(|window| window.x < spacer.x && window.name != crate::divider::AUTOSAVE)
+            .collect();
+        let in_panel = |window: &IconWindow| match divider {
+            Some(divider) => window.x < divider.x,
+            None => !window.onscreen,
+        };
+
+        let (mut panel, mut main) = (self.panel.clone(), self.main.clone());
+        let present = |id: &u32| icons.iter().any(|icon| icon.id == *id);
+        panel.retain(present);
+        main.retain(present);
+        for (index, icon) in icons.iter().enumerate() {
+            let (row, other) = if in_panel(icon) { (&mut panel, &mut main) } else { (&mut main, &mut panel) };
+            if row.contains(&icon.id) {
+                continue;
+            }
+            other.retain(|id| *id != icon.id);
+            let at = icons[..index]
+                .iter()
+                .rev()
+                .find_map(|left| row.iter().position(|id| *id == left.id))
+                .map_or(0, |place| place + 1);
+            row.insert(at, icon.id);
+        }
+        follow_drawn(&mut panel, &icons);
+        follow_drawn(&mut main, &icons);
         self.update(panel, main);
         true
     }
@@ -126,31 +115,16 @@ impl Layout {
     }
 }
 
-/// Строка меню стоит как `panel` и `main`: панель левее разделителя `divider`, основной
-/// ряд правее и по порядку. Порядок панели не в счёт — её рисуют по реестру. Иконки,
-/// которых в строке нет, не в счёт.
-pub fn bar_matches(panel: &[u32], main: &[u32], divider: Option<u32>) -> bool {
-    let windows = capture::icon_layout();
-    let row = |ids: &[u32]| -> Vec<u32> {
-        windows.iter().filter(|window| ids.contains(&window.id)).map(|window| window.id).collect()
-    };
-    let (panel_row, main_row) = (row(panel), row(main));
-    if !main.iter().filter(|id| main_row.contains(id)).eq(main_row.iter()) {
-        return false;
+/// Места нарисованных иконок ряда `row` занимают те же иконки, но в порядке строки `icons`;
+/// ненарисованные остаются на своих местах.
+fn follow_drawn(row: &mut [u32], icons: &[&IconWindow]) {
+    let drawn: Vec<u32> = icons
+        .iter()
+        .filter(|icon| icon.onscreen && row.contains(&icon.id))
+        .map(|icon| icon.id)
+        .collect();
+    let slots = row.iter_mut().filter(|id| drawn.contains(&**id));
+    for (slot, id) in slots.zip(drawn.iter()) {
+        *slot = *id;
     }
-    let Some(divider_x) = divider.and_then(|id| windows.iter().find(|window| window.id == id)).map(|window| window.x)
-    else {
-        return panel_row.is_empty();
-    };
-    windows.iter().all(|window| {
-        !(panel_row.contains(&window.id) && window.x > divider_x || main_row.contains(&window.id) && window.x < divider_x)
-    })
-}
-
-/// Ряд реестра `row` без пропавших из строки (`present`), плюс новые иконки, которые
-/// стоят в этом ряду (`standing`) и реестру ещё не известны (`known`).
-fn keep_order(row: &[u32], present: &[u32], known: &[u32], standing: Vec<u32>) -> Vec<u32> {
-    let mut kept: Vec<u32> = row.iter().filter(|id| present.contains(id)).copied().collect();
-    kept.extend(standing.into_iter().filter(|id| !known.contains(id)));
-    kept
 }

@@ -201,40 +201,6 @@ pub fn editor_panel(lang: Lang) -> &'static str {
     }
 }
 
-pub fn editor_apply(lang: Lang) -> &'static str {
-    match lang {
-        Lang::En => "Apply",
-        Lang::Ru => "Применить",
-    }
-}
-
-pub fn editor_applying(lang: Lang) -> &'static str {
-    match lang {
-        Lang::En => "Applying changes…",
-        Lang::Ru => "Применяю изменения…",
-    }
-}
-
-pub fn editor_cramped(lang: Lang) -> &'static str {
-    match lang {
-        Lang::En => "Some icons are too close to the edge of the visible area and won't be shown. Move them to the panel or turn on Automatic layout.",
-        Lang::Ru => "Часть иконок стоит слишком близко к краю видимой области и не будет видна. Перенесите их в панель или включите «Автоматическое расположение».",
-    }
-}
-
-pub fn editor_not_landed(lang: Lang) -> &'static str {
-    match lang {
-        Lang::En => "Not everything moved — the rows show what actually happened.",
-        Lang::Ru => "Не всё встало на место — в рядах показано, как вышло.",
-    }
-}
-
-pub fn editor_not_started(lang: Lang) -> &'static str {
-    match lang {
-        Lang::En => "Couldn't start — the divider didn't take its place. Try again.",
-        Lang::Ru => "Не удалось начать — разделитель не встал на место. Попробуйте ещё раз.",
-    }
-}
 
 pub fn editor_hint(lang: Lang) -> &'static str {
     match lang {

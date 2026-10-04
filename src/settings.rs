@@ -6,10 +6,9 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, Sel};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSButton, NSControlSize, NSControlStateValueOff, NSControlStateValueOn,
+    NSApplication, NSControlStateValueOff, NSControlStateValueOn,
     NSControlTextEditingDelegate, NSImage, NSImageView, NSLayoutAttribute, NSLayoutPriority,
-    NSLayoutPriorityDragThatCanResizeWindow, NSProgressIndicator,
-    NSProgressIndicatorStyle, NSScrollView, NSSplitViewController, NSSplitViewItem,
+    NSLayoutPriorityDragThatCanResizeWindow, NSScrollView, NSSplitViewController, NSSplitViewItem,
     NSSplitViewItemAccessoryViewController, NSStackView, NSSwitch, NSTableCellView,
     NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle,
     NSTextField, NSUserInterfaceLayoutOrientation, NSView, NSViewController, NSWindow,
@@ -77,16 +76,12 @@ pub struct Settings {
     hint: Retained<NSTextField>,
     permissions: PermissionRows,
     permissions_stale: Retained<NSTextField>,
-    apply_row: Retained<NSStackView>,
-    apply: Retained<NSButton>,
-    progress: Retained<NSProgressIndicator>,
-    progress_label: Retained<NSTextField>,
-    apply_note: Retained<NSTextField>,
+    note: Retained<NSTextField>,
 }
 
 impl Settings {
     /// `target` — контроллер: `onToggleShowPanel:`, `onToggleLogin:`, `onOpenAccessibility:`,
-    /// `onOpenScreenRecording:`, `onResetPermissions:`, `onApplyLayout:`.
+    /// `onOpenScreenRecording:`, `onResetPermissions:`.
     pub fn new(mtm: MainThreadMarker, target: &AnyObject, lang: Lang) -> Self {
         let show_panel = switch(mtm, target, sel!(onToggleShowPanel:));
         let login = switch(mtm, target, sel!(onToggleLogin:));
@@ -119,34 +114,10 @@ impl Settings {
         let hint = wrapping_label(mtm, strings::editor_hint(lang));
         hint.setTextColor(Some(&ui_style::secondary_label_color()));
         let editor = EditorView::new(mtm, lang, EDITOR_WIDTH);
-        let apply = button(
-            mtm,
-            strings::editor_apply(lang),
-            target,
-            sel!(onApplyLayout:),
-        );
-        // TODO: проба — иконка переставляется сразу после броска; вернуть кнопку, если проба не приживётся.
-        apply.setHidden(true);
-        let progress = NSProgressIndicator::new(mtm);
-        progress.setStyle(NSProgressIndicatorStyle::Spinning);
-        progress.setControlSize(NSControlSize::Small);
-        progress.setIndeterminate(true);
-        progress.setDisplayedWhenStopped(false);
-        let progress_label = label(mtm, strings::editor_applying(lang));
-        progress_label.setTextColor(Some(&ui_style::secondary_label_color()));
-        progress_label.setHidden(true);
-        let apply_row = NSStackView::stackViewWithViews(
-            &NSArray::from_slice(&[&*apply as &NSView, &*progress, &*progress_label]),
-            mtm,
-        );
-        apply_row.setSpacing(SPACING / 2.0);
-        let apply_note = wrapping_label(mtm, "");
-        apply_note.setTextColor(Some(&ui_style::secondary_label_color()));
-        apply_note.setHidden(true);
-        let layout = pane(
-            mtm,
-            &[&*automatic_row as &NSView, &*hint, &*editor, &*apply_row, &*apply_note],
-        );
+        let note = wrapping_label(mtm, "");
+        note.setTextColor(Some(&ui_style::secondary_label_color()));
+        note.setHidden(true);
+        let layout = pane(mtm, &[&*automatic_row as &NSView, &*hint, &*editor, &*note]);
         editor
             .trailingAnchor()
             .constraintEqualToAnchor_constant(&layout.trailingAnchor(), -CONTENT_INSET)
@@ -221,36 +192,14 @@ impl Settings {
             hint,
             permissions,
             permissions_stale,
-            apply_row,
-            apply,
-            progress,
-            progress_label,
-            apply_note,
+            note,
         }
     }
 
-    /// «Применяю изменения…»: кнопка недоступна, рядом крутится индикатор, прошлое пояснение убрано.
-    pub fn set_applying(&self, applying: bool) {
-        if applying {
-            self.set_apply_note(None);
-        }
-        self.apply.setEnabled(!applying);
-        self.editor.set_locked(applying);
-        self.automatic_layout.setEnabled(!applying && show_panel());
-        self.progress_label.setHidden(!applying);
-        unsafe {
-            if applying {
-                self.progress.startAnimation(None);
-            } else {
-                self.progress.stopAnimation(None);
-            }
-        }
-    }
-
-    /// Пояснение под кнопкой «Применить»; None — убрать.
-    pub fn set_apply_note(&self, note: Option<&str>) {
-        self.apply_note.setStringValue(&NSString::from_str(note.unwrap_or_default()));
-        self.apply_note.setHidden(note.is_none());
+    /// Пояснение под редактором; None — убрать.
+    pub fn set_note(&self, note: Option<&str>) {
+        self.note.setStringValue(&NSString::from_str(note.unwrap_or_default()));
+        self.note.setHidden(note.is_none());
     }
 
     pub fn window(&self) -> &NSWindow {
@@ -274,20 +223,18 @@ impl Settings {
         set_switch(&self.login, crate::login::is_enabled());
         let automatic = automatic_layout();
         set_switch(&self.automatic_layout, automatic);
-        // Кнопка «Применить» недоступна только на время переноса иконок.
-        self.automatic_layout.setEnabled(show_panel() && self.apply.isEnabled());
+        self.automatic_layout.setEnabled(show_panel());
         self.set_layout_mode(automatic);
         self.permissions.refresh();
         self.permissions_stale.setHidden(!crate::permissions::look_stale());
     }
 
-    /// При автоматическом расположении редактор и «Применить» скрыты: настраивать нечего.
+    /// При автоматическом расположении редактор скрыт: настраивать нечего.
     fn set_layout_mode(&self, automatic: bool) {
         self.hint.setHidden(automatic);
         self.editor.setHidden(automatic);
-        self.apply_row.setHidden(automatic);
         if automatic {
-            self.set_apply_note(None);
+            self.set_note(None);
         }
     }
 }

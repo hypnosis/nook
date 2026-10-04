@@ -29,9 +29,10 @@ const SHOT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Допуск сравнения координат окон строки меню, pt.
 pub const POSITION_TOLERANCE: f64 = 1.0;
 
-/// Окно иконки строки меню: номер CG-окна, левый край и размер в pt, нарисовано ли.
+/// Окно иконки строки меню: номер CG-окна, имя, левый край и размер в pt, нарисовано ли.
 pub struct IconWindow {
     pub id: u32,
+    pub name: String,
     pub x: f64,
     pub width: f64,
     pub height: f64,
@@ -236,6 +237,7 @@ fn icon_windows(keep: impl Fn(&IconWindow) -> bool) -> Vec<IconWindow> {
                 && name != PRIVACY_INDICATOR;
             let window = IconWindow {
                 id,
+                name,
                 x,
                 width,
                 height,
