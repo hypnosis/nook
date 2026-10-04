@@ -212,40 +212,6 @@ fn bar_children(pid: i32) -> Vec<CFRetained<AXUIElement>> {
         .collect()
 }
 
-// TODO: временный замер иконок у камеры — убрать после разбора.
-/// Все элементы строки меню всех приложений слева направо: «приложение/описание x+ширина».
-pub fn ax_bar_probe() -> Vec<String> {
-    let apps: Vec<(i32, String)> = NSWorkspace::sharedWorkspace()
-        .runningApplications()
-        .iter()
-        .map(|app| (app.processIdentifier(), app.localizedName().map(|n| n.to_string()).unwrap_or_default()))
-        .collect();
-    let mut items: Vec<(f64, String)> = std::thread::scope(|scope| {
-        let workers: Vec<_> = apps
-            .iter()
-            .map(|(pid, name)| {
-                scope.spawn(move || {
-                    bar_children(*pid)
-                        .iter()
-                        .filter_map(|element| {
-                            let (x, width) = frame(element)?;
-                            let label = attribute(element, "AXDescription")
-                                .or_else(|| attribute(element, "AXTitle"))
-                                .and_then(|value| value.downcast::<CFString>().ok())
-                                .map(|value| value.to_string())
-                                .unwrap_or_default();
-                            Some((x, format!("{name}/{label} {x:.0}+{width:.0}")))
-                        })
-                        .collect::<Vec<_>>()
-                })
-            })
-            .collect();
-        workers.into_iter().flat_map(|worker| worker.join().unwrap_or_default()).collect()
-    });
-    items.sort_by(|a, b| a.0.total_cmp(&b.0));
-    items.into_iter().map(|(_, line)| line).collect()
-}
-
 fn running_pids() -> Vec<i32> {
     NSWorkspace::sharedWorkspace()
         .runningApplications()

@@ -32,7 +32,7 @@ mod ui_style;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSScreen};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate};
 
 use crate::controller::Controller;
 
@@ -50,12 +50,6 @@ fn main() {
     let controller: Retained<Controller> = Controller::new(mtm);
     let delegate = ProtocolObject::<dyn NSApplicationDelegate>::from_ref(&*controller);
     app.setDelegate(Some(delegate));
-
-    // TODO: временный замер иконок у камеры — убрать после разбора.
-    if let Some(screen) = NSScreen::mainScreen(mtm) {
-        let left = screen.auxiliaryTopLeftArea();
-        log::start_bar_probe((left.origin.x + left.size.width, screen.auxiliaryTopRightArea().origin.x));
-    }
 
     app.run();
 }
