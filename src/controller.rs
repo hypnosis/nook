@@ -291,7 +291,7 @@ define_class!(
             if let Some(settings) = self.ivars().settings.borrow().as_ref() {
                 settings.refresh();
             }
-            self.ivars().apply_when_editor_ready.set(!automatic);
+            self.ivars().apply_when_editor_ready.set(false);
             if automatic {
                 self.ivars().layout.borrow_mut().enter_automatic();
                 self.stop_editor_refresh();
@@ -305,6 +305,7 @@ define_class!(
                 self.reindex_panel();
                 return;
             }
+            self.ivars().apply_when_editor_ready.set(true);
             let mtm = self.mtm();
             self.ivars()
                 .divider
@@ -524,6 +525,7 @@ define_class!(
                 crate::log::append("применить: перенос завис — возвращаю мышь");
                 crate::mover::cancel();
                 self.give_back_mouse();
+                self.widen_divider();
                 self.finish_apply();
                 return;
             }

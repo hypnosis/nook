@@ -78,7 +78,7 @@ enum Destination<'a> {
     RightOf(&'a IconWindow),
 }
 
-/// Способ, сработавший последним, — с него и начинаем.
+/// Способ, сработавший последним: следующий перенос пробует его сразу после адресного.
 static PREFERRED: AtomicUsize = AtomicUsize::new(0);
 
 /// Когда перенос последний раз сделал шаг; `None` — переноса нет.
@@ -273,7 +273,7 @@ fn arrange_all(order: &[u32], own: u32) -> (Vec<u32>, bool) {
     if !pinned.is_empty() {
         crate::log::append(&format!("mover: окна {pinned:?} не сдвинулись, остальные поставил вокруг"));
     }
-    (skipped, cramped || hidden_in_wrong_row(order, own))
+    (skipped, cramped)
 }
 
 /// Тесная строка: у ≡◂ видны не те окна. Как человек руками, бросаем в чёлку (`edge` — её
@@ -339,22 +339,6 @@ fn wanted_of(order: &[u32], present: &[u32]) -> Vec<u32> {
     order.iter().filter(|id| present.contains(id)).copied().collect()
 }
 
-/// Спрятанная у чёлки иконка стоит не по ту сторону разделителя `own`, что в `order`:
-/// мышью её туда не перенести.
-fn hidden_in_wrong_row(order: &[u32], own: u32) -> bool {
-    let layout = crate::capture::icon_layout();
-    let Some(divider_x) = layout.iter().find(|window| window.id == own).map(|window| window.x) else {
-        return false;
-    };
-    let own_place = order.iter().position(|&id| id == own).unwrap_or(order.len());
-    layout.iter().filter(|window| !window.onscreen).any(|window| {
-        order
-            .iter()
-            .position(|&id| id == window.id)
-            .is_some_and(|place| (window.x < divider_x) != (place < own_place))
-    })
-}
-
 /// Самая тяжёлая подпоследовательность `current`, которая уже идёт в порядке `order`.
 /// Обычное окно весит 1, неподвижное — `PINNED_WEIGHT`.
 fn stable_chain(order: &[u32], current: &[u32], pinned: &HashSet<u32>) -> Vec<u32> {
@@ -417,7 +401,10 @@ fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>, after_move: bo
     let to = CGPoint::new(target_x, from.y);
     let started = Instant::now();
     let preferred = PREFERRED.load(Ordering::Relaxed);
-    let attempts = std::iter::once(preferred).chain((0..METHODS.len()).filter(|&m| m != preferred));
+    // Адресный — всегда первым: осечка одной иконки не переводит следующие на перетаскивание.
+    let attempts = std::iter::once(0)
+        .chain(std::iter::once(preferred).filter(|&m| m != 0))
+        .chain((1..METHODS.len()).filter(move |&m| m != preferred));
     for method in attempts {
         let moved = match METHODS[method] {
             Method::Targeted => press_and_release(item, destination),
