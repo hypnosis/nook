@@ -1,4 +1,4 @@
-# nook
+# Nook
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/hypnosis/nook?sort=semver)](https://github.com/hypnosis/nook/releases/latest)
@@ -6,65 +6,62 @@
 ![Rust](https://img.shields.io/badge/Rust-1.95+-orange?logo=rust)
 ![Built with objc2](https://img.shields.io/badge/built%20with-objc2-blueviolet)
 
-Hide extra menu bar icons on macOS. Native, lightweight, no hacks.
+A fast, lightweight menu bar manager for macOS. Native, written in Rust.
 
-## What it does
+## Why
 
-Your menu bar fills up with status icons you rarely look at. **nook** pushes the
-extra ones off the edge of the screen, so they're out of sight. Click to bring
-them back. That's it.
+Menu bar icons pile up. On a MacBook with a notch, the ones that don't fit are
+simply not drawn, and there is no way to reach them. Nook hides the extras and
+keeps them one click away.
 
-**Shown** — the chevron anchor `‹` and the icons to its left:
+Nook is a single small binary built on AppKit through
+[objc2](https://github.com/madsmtm/objc2). No Electron, no web views, no
+background services. It uses system menu bar items and panels, so it looks and
+behaves like part of macOS.
 
-<img src="docs/screenshots/screenshot-shown.png" width="720" alt="nook showing icons">
+<img src="docs/screenshots/screenshot-shown.png" width="720" alt="Nook showing icons">
 
-**Hidden** — click the anchor and they slide past the edge:
+<img src="docs/screenshots/screenshot-hidden.png" width="720" alt="Nook hiding icons">
 
-<img src="docs/screenshots/screenshot-hidden.png" width="720" alt="nook hiding icons">
+## Usage
 
-## How it works
+Click the `‹` anchor to hide or show the extra icons. Hidden icons appear in a
+panel below the menu bar; click one to open its menu. The menu bar collapses
+again after a few seconds of inactivity.
 
-nook adds two small items to your menu bar:
+### Automatic layout
 
-- **the chevron anchor** `‹` — click it to hide or show.
-- **the cutter** `▏` — everything to the **left** of the cutter is what gets hidden.
+Nothing to set up. Icons that don't fit in the menu bar go to the panel, and
+come back when there is room again.
 
-When you hide, the cutter expands leftward and shoves every icon left of it past
-the edge of the screen. The chevron flips to point down `⌄`. Click it again and
-they slide back.
+### Manual layout
 
-It also hides on its own: **1 second after launch**, and after **3 seconds of
-inactivity** once your mouse leaves the menu bar.
+**Settings → Layout.** Drag icons between the **Menu bar** and **Panel** rows.
+The real icon moves in the menu bar right away, without moving your cursor. The
+panel order is kept across restarts.
 
-### If the anchor shows `⚠`
+## Permissions
 
-The order of the two items matters: the cutter `▏` must sit to the **left** of
-the anchor `‹`. macOS doesn't guarantee the order they end up in, so sometimes
-they land swapped — the anchor ends up left of the cutter. When that happens nook
-refuses to hide (it would push its own anchor off-screen) and the anchor shows
-`⚠` instead.
+Hiding icons works without any permissions. The panel needs two:
 
-To fix it, swap their positions: **hold Cmd and drag** the items in the menu bar
-until the cutter is left of the anchor.
+- **Screen Recording** — to show hidden icons in the panel. Only the menu bar is
+  captured.
+- **Accessibility** — to open an icon's menu when you click it in the panel, and
+  to move icons in manual layout.
 
-## Why no hacks
-
-Tools like Bartender mirror other apps' icons by screen-recording the menu bar
-and faking input events (Screen Recording, Accessibility, synthetic events).
-That's fragile — it breaks on almost every macOS update. nook doesn't do any of
-that. It only manages its own menu bar items and pushes the rest off-screen with
-a plain spacer. Pure AppKit, nothing to break.
-
-## Tested on
+## Requirements
 
 - macOS 26 Tahoe
 - Apple Silicon (arm64)
 
+Nook may also run on macOS 15 Sequoia, but it is not tested there.
+
 ## Install
 
-1. Download the `.dmg` from [Releases](../../releases) and drag **nook** into Applications.
-2. The app is ad-hoc signed (not notarized), so on first launch macOS will block
-   it. Right-click the app → **Open** → **Open**. Or from Terminal:
+1. Download the `.dmg` from [Releases](../../releases) and drag **Nook** into
+   Applications.
+2. The app is ad-hoc signed, not notarized, so macOS blocks the first launch.
+   Right-click the app → **Open** → **Open**, or run:
 
    ```sh
    xattr -dr com.apple.quarantine /Applications/Nook.app
@@ -81,11 +78,6 @@ cargo build --release   # build the binary
 ./make-dmg.sh           # bundle into Nook.app and a .dmg
 ```
 
-## Note
-
-Right-clicking the anchor opens a menu — using that menu as the place for
-settings and controls is a direction worth exploring.
-
 ## License
 
-[MIT](LICENSE) — free to use, modify, and build on.
+[MIT](LICENSE)

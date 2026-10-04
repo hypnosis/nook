@@ -1,29 +1,35 @@
-# clearbar — что это
+# Nook — overview
 
-> _Документ описывает целевое видение продукта. Текущий релиз (v0.1.0) умеет только скрытие иконок строки меню; полоска-бар, настройки и автозапуск при логине — пока не реализованы._
+Nook is a menu bar manager for macOS. It hides extra status icons and shows them
+in a panel below the menu bar, where they stay clickable. The goal is a tool that
+is fast, small and native: Rust on top of AppKit, nothing else.
 
-clearbar прячет лишние иконки в строке меню macOS, чтобы она не была забита под завязку. Слева остаётся разделитель — маленькая стрелочка `<`. Нажал на неё — снизу выезжает полоска-бар с вашими ярлыками, нажал ещё раз или подождал — она снова прячется. По духу это то же, что HiddenBar или Ice, только написано для себя и без лишнего.
+## How it works
 
-## Как это выглядит для пользователя
+- **Divider.** An invisible status item of Nook's own. Everything to its left is
+  hidden; widening it pushes those icons out of view.
+- **Anchor `‹`.** Toggles the hidden icons. The menu bar collapses on its own
+  after a few seconds of inactivity.
+- **Panel.** Shows images of the hidden icons below the menu bar. A click on an
+  image presses the real icon, so its menu opens as usual.
+- **Layout.** In automatic mode, whatever doesn't fit goes to the panel. In
+  manual mode, the user drags icons between two rows in Settings, and Nook moves
+  the real icon in the menu bar. The menu bar is the source of truth: the editor
+  always shows the order macOS actually has.
 
-Лишние иконки уезжают за край строки меню — их просто не видно. А по клику на разделитель `<` снизу под строкой меню выезжает узкая полоска-бар с ярлыками приложений и действий, которые вы сами туда положили. Это удобно: на ноутбуках с чёлкой и на узких экранах в самой строке меню места не хватает, а отдельная полоска эту проблему снимает. Полоска может прятаться сама по таймеру, если её не трогают.
+## Permissions
 
-Важно понимать: полоска снизу — это **ваши ярлыки**, а не зеркало реальных скрытых иконок. Она показывает то, что вы сами в неё положили.
+| Permission | Used for |
+|------------|----------|
+| Screen Recording | Images of hidden icons in the panel |
+| Accessibility | Pressing hidden icons, moving icons in manual layout |
 
-## В чём принципиальная разница с Bartender
+Without them, hiding and showing still works.
 
-Bartender, чтобы показать чужие иконки в своей плашке, фактически фотографирует строку меню и подменяет картинки через системные лазейки (Screen Recording, Accessibility). Из-за этого он постоянно глючит и ломается на новых версиях macOS. clearbar так не делает. Лишние иконки он просто выталкивает за край экрана своим невидимым разделителем, а полоска снизу показывает собственные ярлыки. Никаких скриншотов и системных лазеек — меньше магии, меньше поломок.
+## Scope
 
-## Что входит в первую версию
+- Built for macOS 26 Tahoe. May also run on macOS 15 Sequoia, not tested.
+- A personal tool, not a commercial product.
 
-- Спрятать и показать иконки за разделитель. ✅ сделано
-- Автоскрытие: через 1 сек после запуска и через 3 сек бездействия. ✅ сделано
-- Контекстное меню по правому клику (О программе, Выход). ✅ сделано
-- Полоска-бар своих ярлыков под строкой меню (по клику на `<`). `want fix` — не реализовано
-- Настройки: горячая клавиша для переключения и автозапуск при входе в систему. `want fix` — не реализовано
-- Современная иконка приложения и аккуратный внешний вид. `want fix` — не реализовано
-
-## Рамки
-
-- Работает только на macOS 26 Tahoe. Старые версии не поддерживаем.
-- Утилита для личного пользования, не коммерческий продукт.
+Decisions and their reasons live in [`docs/decisions/`](../decisions/), plans in
+[`sprints/`](../../sprints/).
