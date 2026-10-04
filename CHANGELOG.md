@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-10-04
+
+### Changed
+- No more Apply: dropping a tile in the layout editor moves that one icon in the menu bar right away. See ADR 020.
+- The editor mirrors the menu bar: the main row follows the real order, including icons hidden behind the notch; a drop that lands elsewhere shows where the icon really went.
+
+### Fixed
+- A second drop no longer fails while the layout editor is open: the divider no longer narrows under it.
+- With the camera indicator on, hidden icons no longer scramble the editor order.
+- Drops next to the notch no longer release under the notch.
+- Nook no longer crashes if a background thread fails while holding a shared lock.
+
 ## [0.3.2] - 2026-10-04
 
 ### Fixed
