@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use dispatch2::DispatchQueue;
 use objc2::runtime::AnyObject;
@@ -63,7 +63,7 @@ pub fn remember_owners_now(ids: &[u32]) {
 }
 
 fn missing_owners(ids: &[u32]) -> Vec<u32> {
-    let cache = CACHE.lock().unwrap();
+    let cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
     ids.iter()
         .filter(|id| cache.as_ref().is_none_or(|c| !c.contains_key(id)))
         .copied()
@@ -74,7 +74,7 @@ fn find_owners(ids: &[u32], pids: &[i32]) {
     let found = match_windows(ids, pids);
     CACHE
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .get_or_insert_with(HashMap::new)
         .extend(found);
 }
@@ -93,7 +93,7 @@ fn notify_remembered() {
 pub fn owner_pid(id: u32) -> Option<i32> {
     CACHE
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .as_ref()?
         .get(&id)
         .map(|item| item.pid)
@@ -110,7 +110,7 @@ pub fn click_window(id: u32) {
     std::thread::spawn(move || {
         let cached = CACHE
             .lock()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .as_mut()
             .and_then(|cache| cache.remove(&id));
         let item = cached.or_else(|| {
@@ -135,7 +135,7 @@ pub fn click_window(id: u32) {
         }
         CACHE
             .lock()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .get_or_insert_with(HashMap::new)
             .insert(id, item);
     });
@@ -177,6 +177,14 @@ fn all_items(pids: &[i32]) -> Vec<(f64, AxItem)> {
 
 /// Иконки строки меню одного приложения с центрами x.
 fn app_items(pid: i32) -> Vec<(f64, AxItem)> {
+    bar_children(pid)
+        .into_iter()
+        .filter_map(|element| center_x(&element).map(|center| (center, AxItem { pid, element })))
+        .collect()
+}
+
+/// Элементы строки меню приложения `pid` в Accessibility.
+fn bar_children(pid: i32) -> Vec<CFRetained<AXUIElement>> {
     let app = unsafe { AXUIElement::new_application(pid) };
     unsafe { app.set_messaging_timeout(AX_TIMEOUT) };
     let Some(bar) = attribute(&app, "AXExtrasMenuBar") else {
@@ -191,18 +199,44 @@ fn app_items(pid: i32) -> Vec<(f64, AxItem)> {
     let Some(children) = children.downcast::<CFArray>().ok() else {
         return Vec::new();
     };
-    let mut items = Vec::new();
-    for index in 0..children.count() {
-        let item = unsafe { children.value_at_index(index) } as *mut AXUIElement;
-        let Some(item) = NonNull::new(item) else {
-            continue;
-        };
-        let element = unsafe { CFRetained::retain(item) };
-        if let Some(center) = center_x(&element) {
-            items.push((center, AxItem { pid, element }));
-        }
-    }
-    items
+    (0..children.count())
+        .filter_map(|index| NonNull::new(unsafe { children.value_at_index(index) } as *mut AXUIElement))
+        .map(|item| unsafe { CFRetained::retain(item) })
+        .collect()
+}
+
+// TODO: временный замер иконок у камеры — убрать после разбора.
+/// Все элементы строки меню всех приложений слева направо: «приложение/описание x+ширина».
+pub fn ax_bar_probe() -> Vec<String> {
+    let apps: Vec<(i32, String)> = NSWorkspace::sharedWorkspace()
+        .runningApplications()
+        .iter()
+        .map(|app| (app.processIdentifier(), app.localizedName().map(|n| n.to_string()).unwrap_or_default()))
+        .collect();
+    let mut items: Vec<(f64, String)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = apps
+            .iter()
+            .map(|(pid, name)| {
+                scope.spawn(move || {
+                    bar_children(*pid)
+                        .iter()
+                        .filter_map(|element| {
+                            let (x, width) = frame(element)?;
+                            let label = attribute(element, "AXDescription")
+                                .or_else(|| attribute(element, "AXTitle"))
+                                .and_then(|value| value.downcast::<CFString>().ok())
+                                .map(|value| value.to_string())
+                                .unwrap_or_default();
+                            Some((x, format!("{name}/{label} {x:.0}+{width:.0}")))
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        workers.into_iter().flat_map(|worker| worker.join().unwrap_or_default()).collect()
+    });
+    items.sort_by(|a, b| a.0.total_cmp(&b.0));
+    items.into_iter().map(|(_, line)| line).collect()
 }
 
 fn running_pids() -> Vec<i32> {
@@ -237,6 +271,12 @@ fn attribute(element: &AXUIElement, name: &'static str) -> Option<CFRetained<CFT
 }
 
 fn center_x(item: &AXUIElement) -> Option<f64> {
+    let (x, width) = frame(item)?;
+    (width > 0.0).then_some(x + width / 2.0)
+}
+
+/// Левый край и ширина элемента.
+fn frame(item: &AXUIElement) -> Option<(f64, f64)> {
     let position = attribute(item, "AXPosition")?.downcast::<AXValue>().ok()?;
     let size = attribute(item, "AXSize")?.downcast::<AXValue>().ok()?;
     let mut point = CGPoint::new(0.0, 0.0);
@@ -250,5 +290,5 @@ fn center_x(item: &AXUIElement) -> Option<f64> {
             NonNull::from(&mut extent).cast::<c_void>(),
         )
     };
-    (ok && extent.width > 0.0).then_some(point.x + extent.width / 2.0)
+    ok.then_some((point.x, extent.width))
 }

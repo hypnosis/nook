@@ -1,6 +1,6 @@
 //! Снимки иконок строки меню для панели и редактора.
 
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use block2::RcBlock;
@@ -8,13 +8,13 @@ use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, AnyThread, MainThreadMarker, Message};
-use objc2_app_kit::{NSApplication, NSImage, NSRunningApplication};
+use objc2_app_kit::{NSApplication, NSImage, NSRunningApplication, NSWorkspace};
 use objc2_core_foundation::{CFRetained, CGRect};
 use objc2_core_graphics::{
     kCGNullWindowID, kCGStatusWindowLevel, CGImage, CGMainDisplayID, CGWindowListCopyWindowInfo,
     CGWindowListOption,
 };
-use objc2_foundation::{NSArray, NSDictionary, NSError, NSNumber, NSSize, NSString};
+use objc2_foundation::{NSArray, NSDictionary, NSError, NSNumber, NSSize, NSString, NSUserDefaults};
 use objc2_screen_capture_kit::{
     SCContentFilter, SCScreenshotManager, SCShareableContent, SCStreamConfiguration,
 };
@@ -166,7 +166,7 @@ fn finish_one(
     shot: Option<Shot>,
     receiver: Receiver,
 ) {
-    let mut guard = results.lock().unwrap();
+    let mut guard = results.lock().unwrap_or_else(PoisonError::into_inner);
     guard.0[index] = shot;
     guard.1 -= 1;
     if guard.1 == 0 {
@@ -342,6 +342,70 @@ pub fn window_centers(ids: &[u32]) -> Vec<(u32, f64)> {
             Some((id, x + width / 2.0))
         })
         .collect()
+}
+
+// TODO: временный замер иконок у камеры — убрать после разбора.
+/// Все окна уровня строки меню у верхнего края, любого владельца, слева направо:
+/// «номер владелец/имя x+ширина» и `off`, если окно не нарисовано.
+pub fn bar_windows_probe() -> Vec<String> {
+    let Some(list) = window_list(CGWindowListOption::OptionAll, kCGNullWindowID) else {
+        return Vec::new();
+    };
+    let text = |info: &NSDictionary<NSString, AnyObject>, key: &str| {
+        info.objectForKey(&NSString::from_str(key))
+            .and_then(|v| v.downcast::<NSString>().ok())
+            .map(|s| s.to_string())
+            .unwrap_or_default()
+    };
+    let mut windows: Vec<(f64, String)> = list
+        .iter()
+        .filter_map(|info| {
+            let layer = number(&info, "kCGWindowLayer")?.intValue();
+            let (x, y, width, height) = bounds(&info)?;
+            if layer as isize != kCGStatusWindowLevel as isize || y != 0.0 || height > MAX_ICON_HEIGHT {
+                return None;
+            }
+            let id = number(&info, "kCGWindowNumber")?.unsignedIntValue();
+            let onscreen = number(&info, "kCGWindowIsOnscreen").is_some_and(|n| n.boolValue());
+            let line = format!(
+                "{id} {}/{} {x:.0}+{width:.0}{}",
+                text(&info, "kCGWindowOwnerName"),
+                text(&info, "kCGWindowName"),
+                if onscreen { "" } else { " off" }
+            );
+            Some((x, line))
+        })
+        .collect();
+    windows.sort_by(|a, b| a.0.total_cmp(&b.0));
+    windows.into_iter().map(|(_, line)| line).collect()
+}
+
+// TODO: временный замер иконок у камеры — убрать после разбора.
+/// Preferred Position всех иконок из настроек приложений, слева направо: «приложение/имя позиция».
+/// Позиция — отступ от правого края экрана, поэтому больше — левее.
+pub fn preferred_positions_probe() -> Vec<String> {
+    const PREFIX: &str = "NSStatusItem Preferred Position ";
+    let defaults = NSUserDefaults::standardUserDefaults();
+    let mut items: Vec<(f64, String)> = Vec::new();
+    for app in NSWorkspace::sharedWorkspace().runningApplications().iter() {
+        let Some(bundle) = app.bundleIdentifier() else { continue };
+        let Some(domain) = defaults.persistentDomainForName(&bundle) else { continue };
+        let app_name = app.localizedName().map(|n| n.to_string()).unwrap_or_default();
+        for key in domain.allKeys().iter() {
+            let key = key.to_string();
+            let Some(name) = key.strip_prefix(PREFIX) else { continue };
+            let Some(position) = domain
+                .objectForKey(&NSString::from_str(&key))
+                .and_then(|value| value.downcast::<NSNumber>().ok())
+                .map(|value| value.doubleValue())
+            else {
+                continue;
+            };
+            items.push((position, format!("{app_name}/{name} {position:.0}")));
+        }
+    }
+    items.sort_by(|a, b| b.0.total_cmp(&a.0));
+    items.into_iter().map(|(_, line)| line).collect()
 }
 
 /// CFArray из CGWindowListCopyWindowInfo бесшовно приводится к NSArray<NSDictionary>.

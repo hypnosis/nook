@@ -62,6 +62,9 @@ const PLACEMENT_ESCALATE_AFTER: u32 = 4;
 /// Полный потолок проверок размещения — затем таймер останавливается.
 const PLACEMENT_MAX_ATTEMPTS: u32 = 30;
 
+/// x айтема, которого macOS ещё не разместила в строке.
+const UNPLACED_X: f64 = 0.0;
+
 /// Пауза после раскрытия, чтобы окна иконок встали на места перед съёмкой.
 // HARDCODE: задержка съёмки иконок; вынести в конфиг позже.
 const PANEL_CAPTURE_DELAY: f64 = 0.3;
@@ -435,21 +438,30 @@ define_class!(
             let Some(place) = row.iter().position(|&tile| tile == id) else { return };
             let after = place.checked_sub(1).map(|left| row[left]);
             let before = row.get(place + 1).copied();
-            self.set_moving(true);
-            self.ivars().mouse_taken.set(true);
-            crate::mover::take_mouse();
-            crate::mover::move_one(id, before, after);
-            self.arm_move_watchdog();
+            self.start_move(id, before, after);
         }
 
-        /// Перенос закончен: реестр берёт порядок редактора, строку сверит ближайший тик.
+        /// Перенос закончен: панель берёт порядок редактора, основной ряд — порядок строки,
+        /// и редактор показывает, что вышло.
         #[unsafe(method(onTileMoved))]
         fn on_tile_moved(&self) {
             self.give_back_mouse();
             self.set_moving(false);
-            if let Some((panel, main)) = self.ivars().settings.borrow().as_ref().map(|settings| settings.editor.order()) {
-                self.ivars().layout.borrow_mut().set(&panel, &main);
+            let Some((panel, main)) = self.ivars().settings.borrow().as_ref().map(|settings| settings.editor.order())
+            else {
+                return;
+            };
+            self.ivars().layout.borrow_mut().set(&panel, &main);
+            self.refresh_layout();
+            {
+                let layout = self.ivars().layout.borrow();
+                crate::log::append(&format!(
+                    "после броска: редактор {main:?}, строка {:?}{}",
+                    layout.main(),
+                    if layout.main() == main.as_slice() { "" } else { " — расходятся" }
+                ));
             }
+            self.show_layout_in_editor();
             let _: () = unsafe { msg_send![self, onPanelCapture: std::ptr::null_mut::<AnyObject>()] };
         }
 
@@ -545,7 +557,7 @@ define_class!(
 
             let lang = self.ivars().lang;
             let target: &AnyObject = self.as_ref();
-            let both_ok = sx.is_some() && sx != Some(0.0) && ax.is_some() && ax != Some(0.0);
+            let both_ok = is_placed(sx) && is_placed(ax);
 
             // Оба размещены → общий финиш (событие могло уже его сделать) + стоп таймера.
             if both_ok {
@@ -574,7 +586,7 @@ define_class!(
             }
 
             // Обычный retry: пересоздать конкретный застрявший айтем.
-            if sx == Some(0.0) && self.ivars().spacer_retries.get() > 0 {
+            if sx == Some(UNPLACED_X) && self.ivars().spacer_retries.get() > 0 {
                 self.ivars()
                     .spacer_retries
                     .set(self.ivars().spacer_retries.get() - 1);
@@ -584,7 +596,7 @@ define_class!(
                 }
                 return;
             }
-            if ax == Some(0.0) && self.ivars().anchor_retries.get() > 0 {
+            if ax == Some(UNPLACED_X) && self.ivars().anchor_retries.get() > 0 {
                 self.ivars()
                     .anchor_retries
                     .set(self.ivars().anchor_retries.get() - 1);
@@ -910,7 +922,7 @@ impl Controller {
                 status_bar::item_origin_x(&items.anchor, mtm),
             )
         };
-        let both_ok = sx.is_some() && sx != Some(0.0) && ax.is_some() && ax != Some(0.0);
+        let both_ok = is_placed(sx) && is_placed(ax);
         if !both_ok {
             return;
         }
@@ -975,6 +987,16 @@ impl Controller {
         if let Some(settings) = self.ivars().settings.borrow().as_ref() {
             settings.editor.show(layout.panel(), layout.main());
         }
+    }
+
+    /// Один перенос иконки `id` левее `before` и правее `after`; мышь на это время отвязана.
+    fn start_move(&self, id: u32, before: Option<u32>, after: Option<u32>) {
+        self.set_moving(true);
+        self.ivars().mouse_taken.set(true);
+        crate::mover::take_mouse();
+        let notch_right = NSScreen::mainScreen(self.mtm()).map_or(0.0, |screen| screen.auxiliaryTopRightArea().origin.x);
+        crate::mover::move_one(id, before, after, notch_right);
+        self.arm_move_watchdog();
     }
 
     fn arm_move_watchdog(&self) {
@@ -1203,4 +1225,9 @@ impl Controller {
             .unwrap_or(SCREEN_WIDTH_FALLBACK);
         (screen_width + HIDDEN_WIDTH_MARGIN).clamp(HIDDEN_WIDTH_MIN, HIDDEN_WIDTH_MAX)
     }
+}
+
+/// Айтем стоит в строке: его x известен и это не место неразмещённого.
+fn is_placed(x: Option<f64>) -> bool {
+    x.is_some_and(|x| x != UNPLACED_X)
 }

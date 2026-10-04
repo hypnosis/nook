@@ -76,7 +76,6 @@ pub struct Settings {
     hint: Retained<NSTextField>,
     permissions: PermissionRows,
     permissions_stale: Retained<NSTextField>,
-    note: Retained<NSTextField>,
 }
 
 impl Settings {
@@ -114,10 +113,7 @@ impl Settings {
         let hint = wrapping_label(mtm, strings::editor_hint(lang));
         hint.setTextColor(Some(&ui_style::secondary_label_color()));
         let editor = EditorView::new(mtm, lang, EDITOR_WIDTH);
-        let note = wrapping_label(mtm, "");
-        note.setTextColor(Some(&ui_style::secondary_label_color()));
-        note.setHidden(true);
-        let layout = pane(mtm, &[&*automatic_row as &NSView, &*hint, &*editor, &*note]);
+        let layout = pane(mtm, &[&*automatic_row as &NSView, &*hint, &*editor]);
         editor
             .trailingAnchor()
             .constraintEqualToAnchor_constant(&layout.trailingAnchor(), -CONTENT_INSET)
@@ -192,14 +188,7 @@ impl Settings {
             hint,
             permissions,
             permissions_stale,
-            note,
         }
-    }
-
-    /// Пояснение под редактором; None — убрать.
-    pub fn set_note(&self, note: Option<&str>) {
-        self.note.setStringValue(&NSString::from_str(note.unwrap_or_default()));
-        self.note.setHidden(note.is_none());
     }
 
     pub fn window(&self) -> &NSWindow {
@@ -233,9 +222,6 @@ impl Settings {
     fn set_layout_mode(&self, automatic: bool) {
         self.hint.setHidden(automatic);
         self.editor.setHidden(automatic);
-        if automatic {
-            self.set_note(None);
-        }
     }
 }
 

@@ -151,7 +151,8 @@ fn is_cancelled() -> bool {
 /// Ставит одну иконку `id` левее `before` и правее `after` (соседи по строке, один из них
 /// может быть разделителем) и сообщает `onTileMoved`, что перенос закончен. Иконка, которая
 /// не приняла ни один способ переноса, до перезапуска Nook больше не переносится.
-pub fn move_one(id: u32, before: Option<u32>, after: Option<u32>) {
+/// `notch_right` — правый край чёлки: левее него иконку не отпускаем.
+pub fn move_one(id: u32, before: Option<u32>, after: Option<u32>, notch_right: f64) {
     let run = RUN.fetch_add(1, Ordering::SeqCst) + 1;
     *last_step() = Some(Instant::now());
     thread::spawn(move || {
@@ -164,7 +165,7 @@ pub fn move_one(id: u32, before: Option<u32>, after: Option<u32>) {
             crate::click::remember_owners_now(&[id]);
             permit_local_events();
             let home = CGEvent::location(CGEvent::new(None).as_deref());
-            let outcome = move_next_to(id, before, after);
+            let outcome = move_next_to(id, before, after, notch_right);
             post(CGEventType::MouseMoved, home, CGEventFlags::empty());
             CGWarpMouseCursorPosition(home);
             if matches!(outcome, Outcome::Stuck) {
@@ -211,7 +212,7 @@ fn placement(layout: &[IconWindow], id: u32, before: Option<u32>, after: Option<
 
 /// Ставит `id` к соседу: левее `before`, если его край на экране, иначе правее `after`.
 /// Сначала адресный перенос, потом перетаскивание — только если иконка и сосед нарисованы.
-fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>) -> Outcome {
+fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>, notch_right: f64) -> Outcome {
     mark_step();
     let layout = crate::capture::icon_layout();
     let Some(item) = layout.iter().find(|window| window.id == id) else { return Outcome::Skipped };
@@ -245,7 +246,7 @@ fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>) -> Outcome {
         .chain((1..METHODS.len()).filter(move |&m| m != preferred));
     for method in attempts {
         let moved = match METHODS[method] {
-            Method::Targeted => press_and_release(item, destination),
+            Method::Targeted => press_and_release(item, destination, notch_right),
             Method::Drag(..) if !can_drag => continue,
             Method::Drag(step, via_middle) => {
                 drag(from, to, step, via_middle);
@@ -315,13 +316,18 @@ fn wait_window_still(id: u32) -> Duration {
 }
 
 /// Точки нажатия и отпускания у края соседа: иконка встаёт вплотную к нему.
-fn target_points(item: &IconWindow, destination: Destination) -> (CGPoint, CGPoint) {
+/// Под чёлкой отпускать нельзя: тогда отпускаем сразу правее её края, а если и сосед
+/// под чёлкой — на нём самом.
+fn target_points(item: &IconWindow, destination: Destination, notch_right: f64) -> (CGPoint, CGPoint) {
     match destination {
         Destination::LeftOf(target) => {
             let mut start = CGPoint::new(target.x, 0.0);
             let mut end = start;
             if item.x + item.width <= target.x {
                 end.x -= item.width;
+                if end.x <= notch_right {
+                    end.x = if notch_right + 1.0 < target.x { notch_right + 1.0 } else { target.x + DROP_OFFSET };
+                }
             } else {
                 start.x -= 1.0;
             }
@@ -343,7 +349,7 @@ fn target_points(item: &IconWindow, destination: Destination) -> (CGPoint, CGPoi
 /// Перенос, адресованный окнам: нажатие с Cmd — самой иконке, отпускание — соседу, обе
 /// точки у края соседа, курсор по строке не ведётся. Событие получает приложение иконки.
 /// Отпускание уходит и тогда, когда иконка не взялась, чтобы она не осталась зажатой.
-fn press_and_release(item: &IconWindow, destination: Destination) -> bool {
+fn press_and_release(item: &IconWindow, destination: Destination, notch_right: f64) -> bool {
     if is_cancelled() {
         return false;
     }
@@ -351,7 +357,11 @@ fn press_and_release(item: &IconWindow, destination: Destination) -> bool {
         Destination::LeftOf(window) | Destination::RightOf(window) => window,
     };
     let pid = crate::click::owner_pid(item.id);
-    let (start, end) = target_points(item, destination);
+    let (start, end) = target_points(item, destination, notch_right);
+    crate::log::append(&format!(
+        "mover: окно {} нажатие {:.0}, отпускание {:.0}, сосед {} x={:.0}, чёлка до {notch_right:.0}",
+        item.id, start.x, end.x, target.id, target.x
+    ));
     post_to_window(CGEventType::LeftMouseDown, start, item.id, pid, CGEventFlags::MaskCommand);
     let lifted_x = wait_moved(item.id, item.x, TARGETED_TIMEOUT);
     // Двойное отпускание: одиночное на Tahoe иногда оставляет иконку зажатой.
