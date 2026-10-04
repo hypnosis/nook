@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] - 2026-10-04
+
+### Changed
+- README and project overview rewritten in English.
+- Minimum macOS version lowered to 15 Sequoia; tested on 26 Tahoe only.
+- `scripts/install-local.sh` picks the signing identity from `.private/signing.env`; `--adhoc` signs like a release build, `--reset-permissions` resets Nook's permissions.
+
+### Removed
+- Temporary menu bar probe from the debug log.
+
 ## [0.4.1] - 2026-10-04
 
 ### Fixed
