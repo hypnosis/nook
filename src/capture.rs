@@ -54,6 +54,9 @@ struct Shot {
     height: f64,
 }
 
+/// Снимки по местам и сколько ещё ждать.
+type Shots = Arc<Mutex<(Vec<Option<Shot>>, usize)>>;
+
 /// Иконка панели при узком разделителе — окно левее него, `divider_x` — его левый край.
 pub fn is_panel_icon(window: &IconWindow, divider_x: f64) -> bool {
     window.x < divider_x - POSITION_TOLERANCE
@@ -107,7 +110,7 @@ fn capture(windows: Vec<IconWindow>, receiver: Receiver) {
 /// Каждое окно — отдельным фильтром: несколько окон в одном фильтре дают −3811.
 fn capture_windows(content: &SCShareableContent, windows: &[IconWindow], receiver: Receiver) {
     let shareable = unsafe { content.windows() };
-    let results: Arc<Mutex<(Vec<Option<Shot>>, usize)>> = Arc::new(Mutex::new((
+    let results: Shots = Arc::new(Mutex::new((
         (0..windows.len()).map(|_| None).collect(),
         windows.len(),
     )));
@@ -158,7 +161,7 @@ fn capture_windows(content: &SCShareableContent, windows: &[IconWindow], receive
 }
 
 fn finish_one(
-    results: &Arc<Mutex<(Vec<Option<Shot>>, usize)>>,
+    results: &Shots,
     index: usize,
     shot: Option<Shot>,
     receiver: Receiver,

@@ -160,11 +160,8 @@ pub fn set_anchor_symbol(items: &StatusItems, mtm: MainThreadMarker, symbol_name
     let Some(button) = items.anchor.button(mtm) else {
         return;
     };
-    if symbol_name == ANCHOR_SYMBOL_BLOCKED {
-        if set_button_blocked_icon(&button) {
-            return;
-        }
-        // fallback: вшитый PNG не распарсился — ставим системный треугольник.
+    if symbol_name == ANCHOR_SYMBOL_BLOCKED && set_button_blocked_icon(&button) {
+        return;
     }
     set_button_symbol(&button, symbol_name);
 }

@@ -565,7 +565,7 @@ define_class!(
 
             // Эскалация: после нескольких безуспешных попыток одиночное пересоздание
             // не помогает (новый айтем садится на тот же x=0) → пересоздать ОБА.
-            if attempts % PLACEMENT_ESCALATE_AFTER == 0 {
+            if attempts.is_multiple_of(PLACEMENT_ESCALATE_AFTER) {
                 let mut items_ref = self.ivars().items.borrow_mut();
                 if let Some(items) = items_ref.as_mut() {
                     unsafe { status_bar::recreate_both(items, mtm, target, lang) };

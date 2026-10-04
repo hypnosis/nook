@@ -81,7 +81,7 @@ pub fn fit(image: &NSImage, theme: Theme) -> Retained<NSImage> {
     }
     pixels.invert();
     pixels
-        .to_image(image.size())
+        .render(image.size())
         .unwrap_or_else(|| image.retain())
 }
 
@@ -156,7 +156,7 @@ impl Pixels {
         }
     }
 
-    fn to_image(&mut self, size: NSSize) -> Option<Retained<NSImage>> {
+    fn render(&mut self, size: NSSize) -> Option<Retained<NSImage>> {
         let context = self.context()?;
         let cg = CGBitmapContextCreateImage(Some(&context))?;
         Some(NSImage::initWithCGImage_size(NSImage::alloc(), &cg, size))
