@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.3] - 2026-10-04
+
+### Changed
+- Logging goes to the macOS unified log (subsystem `com.hypnosis.nook`): failures and key events always, details only after `defaults write com.hypnosis.nook debugLog -bool YES`. The file log in `/tmp` and the `debug-log` build feature are gone.
+- Behaviour tuning values (menu bar widths, timings, tolerances) are kept in one place.
+
+### Removed
+- `scripts/test-stand.sh`, the placement test stand that relied on the file log.
+
 ## [0.4.2] - 2026-10-04
 
 ### Changed
