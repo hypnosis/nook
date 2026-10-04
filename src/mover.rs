@@ -173,9 +173,10 @@ pub fn arrange(order: Vec<u32>, own: u32, notch_edge: Option<f64>) {
         crate::click::remember_owners_now(&order);
         crate::log::append(&format!("mover: владельцы иконок найдены за {} мс", started.elapsed().as_millis()));
         permit_local_events();
+        let order = with_standing_panel(order, own);
         let home = CGEvent::location(CGEvent::new(None).as_deref());
         let (mut skipped, mut cramped) = arrange_all(&order, own);
-        if notch_edge.is_some_and(|edge| push_into_notch(&order, own, edge)) {
+        if notch_edge.is_some_and(|edge| main_row_hidden(&order, own) && push_into_notch(&order, own, edge)) {
             (skipped, cramped) = arrange_all(&order, own);
         }
         if is_cancelled() {
@@ -308,6 +309,26 @@ fn push_into_notch(order: &[u32], own: u32, edge: f64) -> bool {
     pushed
 }
 
+/// `order` с иконками панели (всё левее `own`) в том порядке, в каком они стоят в строке:
+/// панель рисует их по реестру, в строке им нужно только быть левее разделителя.
+fn with_standing_panel(order: Vec<u32>, own: u32) -> Vec<u32> {
+    let Some(own_place) = order.iter().position(|&id| id == own) else { return order };
+    let (panel, rest) = order.split_at(own_place);
+    let standing = current_order(panel);
+    let mut arranged: Vec<u32> = standing.iter().map(|window| window.id).collect();
+    let absent: Vec<u32> = panel.iter().filter(|id| !arranged.contains(id)).copied().collect();
+    arranged.extend(absent);
+    arranged.extend_from_slice(rest);
+    arranged
+}
+
+/// Иконка основного ряда (правее `own` в `order`) не нарисована: строке тесно.
+fn main_row_hidden(order: &[u32], own: u32) -> bool {
+    let Some(own_place) = order.iter().position(|&id| id == own) else { return false };
+    let main = &order[own_place + 1..];
+    current_order(main).iter().any(|window| !window.onscreen)
+}
+
 /// Окна `order`, которые сейчас нарисованы, слева направо.
 fn visible_order(order: &[u32]) -> Vec<u32> {
     current_order(order).iter().filter(|window| window.onscreen).map(|window| window.id).collect()
@@ -408,7 +429,11 @@ fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>, after_move: bo
         if moved {
             PREFERRED.store(method, Ordering::Relaxed);
             let moved_in = started.elapsed().as_millis();
-            let still_in = wait_window_still(id).as_millis();
+            // Перетаскивание ведётся по координатам: следующему нужны устоявшиеся.
+            let still_in = match METHODS[method] {
+                Method::Targeted => 0,
+                Method::Drag(..) => wait_window_still(id).as_millis(),
+            };
             crate::log::append(&format!(
                 "mover: окно {id} перенесено способом {method} за {moved_in} мс, замерло за {still_in} мс"
             ));

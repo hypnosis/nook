@@ -176,12 +176,17 @@ impl EditorView {
 
     /// Картинки иконок и порядок строки меню: `panel` и `main` слева направо.
     /// Неприменённый порядок сохраняется: обновляются картинки, новые иконки встают
-    /// на свои места в строке меню, пропавшие уходят.
+    /// на свои места в строке меню, пропавшие уходят. Иконка, чей снимок не удался,
+    /// остаётся с прежней картинкой.
     pub fn set_icons(&self, images: &NSArray<NSImage>, ids: &NSArray<NSNumber>, panel: &[u32], main: &[u32]) {
         let shots: Vec<(u32, Retained<NSImage>)> =
             ids.iter().map(|id| id.unsignedIntValue()).zip(images.iter()).collect();
+        let tiled: Vec<u32> = self.ivars().rows.borrow().iter().flatten().map(|tile| tile.id).collect();
         let shown = |ids: &[u32]| -> Vec<u32> {
-            ids.iter().copied().filter(|id| shots.iter().any(|(shot, _)| shot == id)).collect()
+            ids.iter()
+                .copied()
+                .filter(|id| shots.iter().any(|(shot, _)| shot == id) || tiled.contains(id))
+                .collect()
         };
         let system = [shown(main), shown(panel)];
         let order = if self.has_changes() {
@@ -195,14 +200,17 @@ impl EditorView {
         let mut rows: [Vec<Tile>; 2] = [Vec::new(), Vec::new()];
         for (row, ids) in order.iter().enumerate() {
             for id in ids {
-                let Some((_, image)) = shots.iter().find(|(shot, _)| shot == id) else { continue };
-                let tile = match old.iter().position(|tile| tile.id == *id) {
-                    Some(index) => {
+                let image = shots.iter().find(|(shot, _)| shot == id).map(|(_, image)| image);
+                let tile = match (old.iter().position(|tile| tile.id == *id), image) {
+                    (Some(index), image) => {
                         let tile = old.swap_remove(index);
-                        tile.image.setImage(Some(image));
+                        if let Some(image) = image {
+                            tile.image.setImage(Some(image));
+                        }
                         tile
                     }
-                    None => self.make_tile(*id, image),
+                    (None, Some(image)) => self.make_tile(*id, image),
+                    (None, None) => continue,
                 };
                 rows[row].push(tile);
             }

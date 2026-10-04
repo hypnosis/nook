@@ -127,17 +127,15 @@ impl Layout {
 }
 
 /// Строка меню стоит как `panel` и `main`: панель левее разделителя `divider`, основной
-/// ряд правее, оба ряда по порядку. Иконки, которых в строке нет, не в счёт.
+/// ряд правее и по порядку. Порядок панели не в счёт — её рисуют по реестру. Иконки,
+/// которых в строке нет, не в счёт.
 pub fn bar_matches(panel: &[u32], main: &[u32], divider: Option<u32>) -> bool {
     let windows = capture::icon_layout();
     let row = |ids: &[u32]| -> Vec<u32> {
         windows.iter().filter(|window| ids.contains(&window.id)).map(|window| window.id).collect()
     };
     let (panel_row, main_row) = (row(panel), row(main));
-    let in_order = |wanted: &[u32], standing: &[u32]| {
-        wanted.iter().filter(|id| standing.contains(id)).eq(standing.iter())
-    };
-    if !in_order(panel, &panel_row) || !in_order(main, &main_row) {
+    if !main.iter().filter(|id| main_row.contains(id)).eq(main_row.iter()) {
         return false;
     }
     let Some(divider_x) = divider.and_then(|id| windows.iter().find(|window| window.id == id)).map(|window| window.x)

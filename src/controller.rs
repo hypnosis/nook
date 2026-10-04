@@ -398,6 +398,13 @@ define_class!(
                 return;
             }
             crate::capture::capture_for_editor(&ids);
+            // Владельцы видимых иконок нужны переносу; у спрятанных их не найти.
+            let visible: Vec<u32> = crate::capture::icon_layout()
+                .into_iter()
+                .filter(|window| window.onscreen && ids.contains(&window.id))
+                .map(|window| window.id)
+                .collect();
+            crate::click::remember_owners(visible, false);
         }
 
         /// Картинки для редактора готовы — он выстраивает их по порядку.
@@ -623,7 +630,9 @@ define_class!(
                 settings.set_apply_note((!landed).then_some(note));
                 settings.editor.mark_applied();
             }
+            // Порядок поменялся: редактор и открытая панель переснимаются сразу, не дожидаясь тика.
             let _: () = unsafe { msg_send![self, onEditorCapture: std::ptr::null_mut::<AnyObject>()] };
+            let _: () = unsafe { msg_send![self, onPanelCapture: std::ptr::null_mut::<AnyObject>()] };
         }
 
         /// Стартовый разделитель встал на своё место — включаем его и снимаем иконки.
@@ -1248,10 +1257,15 @@ impl Controller {
             crate::log::append("применить: первой иконки основного ряда не видно — разделитель не переставляю");
             return false;
         };
-        let in_place = self.ivars().divider_window.get().is_some_and(|id| {
-            layout.iter().any(|window| {
-                window.id == id && window.onscreen && (window.x + window.width - edge).abs() < crate::capture::POSITION_TOLERANCE
-            })
+        // На месте — стоит левее края и между ними нет иконок; системный индикатор не в счёт.
+        let in_place = old_divider.is_some_and(|divider| {
+            divider.onscreen
+                && divider.x < edge
+                && !layout.iter().any(|window| {
+                    window.id != divider.id
+                        && window.x > divider.x
+                        && window.x < edge - crate::capture::POSITION_TOLERANCE
+                })
         });
         if in_place {
             return false;
