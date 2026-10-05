@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.4] - 2026-10-05
+
+### Changed
+- Layout follows one documented logic (ADR 022): the menu bar is read in one place, one model decides which icons are in the panel, and the panel and the editor only show that model.
+- Icons in the panel are never visible in the menu bar: the panel divider stays wide in manual layout and is resized after every read.
+- A click on a panel image presses the real icon where it is hidden; its menu opens at the left edge of the screen.
+- In automatic layout the panel divider leaves the menu bar, so there is no gap between icons. Turning automatic layout off restores the saved manual layout.
+- The panel changes only on real events: a drop in the editor, a Cmd+drag, an app adding or removing an icon. Width changes and the notch no longer move icons between rows.
+- The panel keeps an icon's last image when a new one can't be taken, instead of dropping the icon.
+- The saved panel order keeps closed apps, so their icons return to their place.
+
+### Removed
+- Narrow mode and the menu bar shroud.
+
 ## [0.4.3] - 2026-10-04
 
 ### Changed
