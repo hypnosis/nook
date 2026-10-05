@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.5] - 2026-10-05
+
+### Changed
+- While the menu bar is expanded, Nook reads it once a second instead of every two seconds, with every check in one pass: an icon of a closed app leaves the panel within a second. A collapsed menu bar still costs nothing.
+- Panel snapshots reuse the list of windows from ScreenCaptureKit until an icon is missing from it, so each read is cheaper.
+
 ## [0.4.4] - 2026-10-05
 
 ### Changed
