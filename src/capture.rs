@@ -75,9 +75,31 @@ pub fn icon_layout() -> Vec<IconWindow> {
     icon_windows(|_| true)
 }
 
+/// Список окон ScreenCaptureKit с прошлых снимков.
+static CONTENT: Mutex<Option<SharedContent>> = Mutex::new(None);
+
+/// Список окон ScreenCaptureKit: неизменяемый снимок, его можно передавать между потоками.
+struct SharedContent(Retained<SCShareableContent>);
+unsafe impl Send for SharedContent {}
+
+/// Прошлый список окон, если в нём есть все окна `windows`.
+fn cached_content(windows: &[IconWindow]) -> Option<Retained<SCShareableContent>> {
+    let guard = CONTENT.lock().unwrap_or_else(PoisonError::into_inner);
+    let content = &guard.as_ref()?.0;
+    let known = unsafe { content.windows() };
+    windows
+        .iter()
+        .all(|icon| known.iter().any(|window| unsafe { window.windowID() } == icon.id))
+        .then(|| content.clone())
+}
+
 fn capture(windows: Vec<IconWindow>, receiver: Receiver) {
     if windows.is_empty() {
         deliver(Vec::new(), receiver);
+        return;
+    }
+    if let Some(content) = cached_content(&windows) {
+        capture_windows(&content, &windows, receiver);
         return;
     }
 
@@ -88,6 +110,7 @@ fn capture(windows: Vec<IconWindow>, receiver: Receiver) {
                 deliver(Vec::new(), receiver);
                 return;
             };
+            *CONTENT.lock().unwrap_or_else(PoisonError::into_inner) = Some(SharedContent(content.clone()));
             capture_windows(&content, &windows, receiver);
         },
     );

@@ -56,7 +56,7 @@ pub const DIVIDER_SHOW_TIMEOUT: Duration = Duration::from_millis(500);
 /// Пауза, чтобы macOS разложила строку после создания разделителя, с.
 pub const DIVIDER_SETTLE_DELAY: f64 = 0.4;
 /// Период чтения строки, пока она раскрыта, с.
-pub const PANEL_REFRESH_INTERVAL: f64 = 2.0;
+pub const PANEL_REFRESH_INTERVAL: f64 = 1.0;
 /// Сколько ждать ответа приложения через Accessibility, с.
 pub const AX_TIMEOUT: f32 = 0.1;
 
