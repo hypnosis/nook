@@ -8,10 +8,7 @@ use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::{Mutex, PoisonError};
 
-use dispatch2::DispatchQueue;
-use objc2::runtime::AnyObject;
-use objc2::{msg_send, MainThreadMarker};
-use objc2_app_kit::{NSApplication, NSRunningApplication, NSWorkspace};
+use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 use objc2_application_services::{
     AXIsProcessTrusted, AXIsProcessTrustedWithOptions, AXUIElement, AXValue, AXValueType,
 };
@@ -33,25 +30,7 @@ unsafe impl Send for AxItem {}
 /// поэтому кэш живёт всё время работы Nook и дополняется только новыми окнами.
 static CACHE: Mutex<Option<HashMap<u32, AxItem>>> = Mutex::new(None);
 
-/// В фоне находит элементы для окон панели, которых ещё нет в кэше.
-/// С `notify` по окончании зовёт `onOwnersRemembered` у делегата приложения.
-pub fn remember_owners(ids: Vec<u32>, notify: bool) {
-    if missing_owners(&ids).is_empty() {
-        if notify {
-            notify_remembered();
-        }
-        return;
-    }
-    let pids = running_pids();
-    std::thread::spawn(move || {
-        find_owners(&missing_owners(&ids), &pids);
-        if notify {
-            notify_remembered();
-        }
-    });
-}
-
-/// То же, что `remember_owners`, но ждёт, пока элементы найдутся. Не из главного потока.
+/// Находит элементы для окон `ids`, которых ещё нет в кэше, и ждёт, пока найдутся. Не из главного потока.
 pub fn remember_owners_now(ids: &[u32]) {
     let missing = missing_owners(ids);
     if !missing.is_empty() {
@@ -74,16 +53,6 @@ fn find_owners(ids: &[u32], pids: &[i32]) {
         .unwrap_or_else(PoisonError::into_inner)
         .get_or_insert_with(HashMap::new)
         .extend(found);
-}
-
-fn notify_remembered() {
-    DispatchQueue::main().exec_async(|| {
-        let mtm = MainThreadMarker::new().expect("main queue");
-        if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
-            let delegate: &AnyObject = delegate.as_ref();
-            let _: () = unsafe { msg_send![delegate, onOwnersRemembered] };
-        }
-    });
 }
 
 /// Процесс приложения, чья иконка — окно `id`, если её элемент уже найден.

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 // Строка меню: ширины и допуски, pt.
 
-/// Ширина узкого элемента строки: спейсер в показанном состоянии и суженный разделитель.
+/// Ширина узкого элемента строки: спейсер в показанном состоянии и разделитель в авторежиме.
 pub const NARROW_ITEM_WIDTH: f64 = 12.0;
 /// Меньше этой ширины раздутый элемент заставляет macOS перемешивать строку.
 pub const HIDING_WIDTH_MIN: f64 = 500.0;
@@ -49,14 +49,14 @@ pub const PLACEMENT_ESCALATE_AFTER: u32 = 4;
 /// Потолок проверок размещения.
 pub const PLACEMENT_MAX_ATTEMPTS: u32 = 30;
 
-/// Пауза после раскрытия, чтобы окна иконок встали перед съёмкой, с.
+/// Сколько ждать, что спейсер вышел на экран после раскрытия, с.
 pub const PANEL_CAPTURE_DELAY: f64 = 0.3;
+/// Сколько ждать, что показанный разделитель панели появился в строке.
+pub const DIVIDER_SHOW_TIMEOUT: Duration = Duration::from_millis(500);
 /// Пауза, чтобы macOS разложила строку после создания разделителя, с.
 pub const DIVIDER_SETTLE_DELAY: f64 = 0.4;
-/// Период обновления копий, пока панель открыта, с.
+/// Период чтения строки, пока она раскрыта, с.
 pub const PANEL_REFRESH_INTERVAL: f64 = 2.0;
-/// Сколько ждать снимка ScreenCaptureKit.
-pub const SHOT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Сколько ждать ответа приложения через Accessibility, с.
 pub const AX_TIMEOUT: f32 = 0.1;
 
@@ -76,12 +76,6 @@ pub const STILL_READS: u32 = 2;
 pub const STILL_POLL: Duration = Duration::from_millis(10);
 pub const STILL_TIMEOUT: Duration = Duration::from_millis(600);
 
-/// Пауза, чтобы шторка успела нарисоваться перед сужением разделителя.
-pub const PAINT_DELAY: Duration = Duration::from_millis(20);
-/// Сколько ждать, что строка разложилась в узком режиме.
-pub const LAYOUT_TIMEOUT: Duration = Duration::from_millis(500);
-/// Иконка, уходящая в спрятанные, ещё гаснет после того, как встала на место.
-pub const FADE_DELAY: Duration = Duration::from_millis(150);
 /// Опрос и таймауты меню, открытого кликом по копии.
 pub const MENU_POLL: Duration = Duration::from_millis(50);
 pub const MENU_APPEAR_TIMEOUT: Duration = Duration::from_millis(1500);

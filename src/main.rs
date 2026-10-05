@@ -8,6 +8,7 @@
 //! Cmd+drag один раз — порядок переживает перезапуск.
 
 mod auto_collapse;
+mod bar;
 mod capture;
 mod click;
 mod controller;
@@ -21,9 +22,8 @@ mod mover;
 mod onboarding;
 mod panel;
 mod permissions;
-mod reveal;
+mod press;
 mod settings;
-mod shroud;
 mod status_bar;
 mod strings;
 mod theme;

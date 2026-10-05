@@ -1,6 +1,6 @@
 //! Снимки иконок строки меню для панели и редактора.
 
-use std::sync::{mpsc, Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use block2::RcBlock;
 use dispatch2::DispatchQueue;
@@ -8,9 +8,9 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, AnyThread, MainThreadMarker, Message};
 use objc2_app_kit::{NSApplication, NSImage, NSRunningApplication};
-use objc2_core_foundation::{CFRetained, CGRect};
+use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{
-    kCGNullWindowID, kCGStatusWindowLevel, CGImage, CGMainDisplayID, CGWindowListCopyWindowInfo,
+    kCGNullWindowID, kCGStatusWindowLevel, CGImage, CGWindowListCopyWindowInfo,
     CGWindowListOption,
 };
 use objc2_foundation::{NSArray, NSDictionary, NSError, NSNumber, NSSize, NSString};
@@ -18,7 +18,7 @@ use objc2_screen_capture_kit::{
     SCContentFilter, SCScreenshotManager, SCShareableContent, SCStreamConfiguration,
 };
 
-use crate::tuning::{MAX_ICON_HEIGHT, POSITION_TOLERANCE, SHOT_TIMEOUT};
+use crate::tuning::MAX_ICON_HEIGHT;
 
 const CONTROL_CENTER_BUNDLE: &str = "com.apple.controlcenter";
 /// Окно системного индикатора камеры, микрофона и записи экрана: его место решает macOS,
@@ -52,11 +52,6 @@ struct Shot {
 
 /// Снимки по местам и сколько ещё ждать.
 type Shots = Arc<Mutex<(Vec<Option<Shot>>, usize)>>;
-
-/// Иконка панели при узком разделителе — окно левее него, `divider_x` — его левый край.
-pub fn is_panel_icon(window: &IconWindow, divider_x: f64) -> bool {
-    window.x < divider_x - POSITION_TOLERANCE
-}
 
 /// Снимает иконки с окнами `ids` и по готовности отдаёт панели через делегата
 /// приложения `setPanelIcons:ids:` — картинки и номера окон в порядке `ids`.
@@ -247,66 +242,6 @@ fn icon_windows(keep: impl Fn(&IconWindow) -> bool) -> Vec<IconWindow> {
         .collect();
     windows.sort_by(|a, b| a.0.total_cmp(&b.0));
     windows.into_iter().map(|(_, w)| w).collect()
-}
-
-/// Снимок участка `rect` главного экрана со всеми окнами, включая наши.
-/// Блокирует поток до готовности снимка, поэтому только из фонового потока.
-pub fn screen_rect(rect: CGRect) -> Option<CFRetained<CGImage>> {
-    let (sender, receiver) = mpsc::channel();
-    let handler = RcBlock::new(
-        move |content: *mut SCShareableContent, error: *mut NSError| {
-            let Some(content) = (unsafe { Retained::retain(content) }) else {
-                log_error("SCShareableContent", error);
-                let _ = sender.send(None);
-                return;
-            };
-            let displays = unsafe { content.displays() };
-            let Some(display) = displays
-                .iter()
-                .find(|d| unsafe { d.displayID() } == CGMainDisplayID())
-            else {
-                let _ = sender.send(None);
-                return;
-            };
-            let filter = unsafe {
-                SCContentFilter::initWithDisplay_excludingWindows(
-                    SCContentFilter::alloc(),
-                    &display,
-                    &NSArray::new(),
-                )
-            };
-            let scale = unsafe { filter.pointPixelScale() } as f64;
-            let config = unsafe { SCStreamConfiguration::new() };
-            unsafe {
-                config.setSourceRect(rect);
-                config.setWidth((rect.size.width * scale).round() as usize);
-                config.setHeight((rect.size.height * scale).round() as usize);
-                config.setShowsCursor(false);
-            }
-            let sender = sender.clone();
-            let done = RcBlock::new(move |image: *mut CGImage, error: *mut NSError| {
-                let image =
-                    std::ptr::NonNull::new(image).map(|image| unsafe { CFRetained::retain(image) });
-                if image.is_none() {
-                    log_error("снимок участка", error);
-                }
-                let _ = sender.send(image);
-            });
-            unsafe {
-                SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(
-                    &filter,
-                    &config,
-                    Some(&done),
-                );
-            }
-        },
-    );
-    unsafe {
-        SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(
-            false, true, &handler,
-        );
-    }
-    receiver.recv_timeout(SHOT_TIMEOUT).ok().flatten()
 }
 
 /// Номера окон процесса `pid`, которые сейчас на экране.

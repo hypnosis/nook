@@ -22,7 +22,7 @@ use objc2_core_graphics::{
 
 use crate::capture::IconWindow;
 use crate::tuning::{
-    BAR_POLL, DROP_NUDGE, DROP_OFFSET, FAST_STEP, POSITION_TOLERANCE, SAFE_STEP, SETTLE_TIMEOUT, STILL_POLL, STILL_READS,
+    BAR_POLL, DIVIDER_SHOW_TIMEOUT, DROP_NUDGE, DROP_OFFSET, FAST_STEP, POSITION_TOLERANCE, SAFE_STEP, SETTLE_TIMEOUT, STILL_POLL, STILL_READS,
     STILL_TIMEOUT, TARGETED_TIMEOUT,
 };
 
@@ -177,6 +177,69 @@ pub fn move_one(id: u32, before: Option<u32>, after: Option<u32>, notch_right: f
             }
         });
     });
+}
+
+/// Возвращает запомненную раскладку: иконки панели — левее разделителя панели, остальные —
+/// правее. Иконка панели — с окном из `panel_ids` или с ключом из `panel_keys`; ключи ищутся,
+/// только если окон модель ещё не знает. Переносятся только чужие иконки, к разделителю:
+/// событие, пришедшее в сам Nook, показывает спрятанный курсор. Курсор спрятан заранее,
+/// на главном потоке; по окончании зовёт `onLayoutRestored`.
+pub fn restore(panel_ids: Vec<u32>, panel_keys: Vec<String>, notch_right: f64) {
+    let run = RUN.fetch_add(1, Ordering::SeqCst) + 1;
+    *last_step() = Some(Instant::now());
+    thread::spawn(move || {
+        OWN_RUN.set(run);
+        let started = Instant::now();
+        permit_local_events();
+        let home = CGEvent::location(CGEvent::new(None).as_deref());
+        wait_divider_shown();
+        wait_until_still();
+        let in_panel = |slot: &crate::bar::Slot| {
+            panel_ids.contains(&slot.id) || slot.key.as_ref().is_some_and(|key| panel_keys.contains(key))
+        };
+        let mut moves = 0;
+        let snapshot = crate::bar::read_now(panel_ids.is_empty());
+        match snapshot.as_ref().and_then(|snapshot| snapshot.divider.as_ref().map(|divider| (snapshot, divider))) {
+            Some((snapshot, divider)) => {
+                for slot in &snapshot.icons {
+                    let destination = match (in_panel(slot), slot.x < divider.x) {
+                        (true, false) => (Some(divider.id), None),
+                        (false, true) => (None, Some(divider.id)),
+                        _ => continue,
+                    };
+                    move_next_to(slot.id, destination.0, destination.1, notch_right);
+                    moves += 1;
+                }
+            }
+            None => log::warn!("раскладка: разделителя панели нет в строке — восстанавливать не к чему"),
+        }
+        post(CGEventType::MouseMoved, home, CGEventFlags::empty());
+        CGWarpMouseCursorPosition(home);
+        log::info!("раскладка: восстановлена за {} мс, переносов {moves}", started.elapsed().as_millis());
+        *last_step() = None;
+        DispatchQueue::main().exec_async(move || {
+            let mtm = MainThreadMarker::new().expect("main queue");
+            if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
+                let delegate: &AnyObject = delegate.as_ref();
+                let _: () = unsafe { msg_send![delegate, onLayoutRestored] };
+            }
+        });
+    });
+}
+
+/// Ждёт, пока только что показанный разделитель панели появится в строке.
+fn wait_divider_shown() {
+    let deadline = Instant::now() + DIVIDER_SHOW_TIMEOUT;
+    while Instant::now() < deadline {
+        let shown = crate::capture::icon_layout()
+            .iter()
+            .any(|window| window.name == crate::divider::AUTOSAVE && window.width > 0.0);
+        if shown {
+            return;
+        }
+        thread::sleep(BAR_POLL);
+    }
+    log::debug!("разделитель панели не появился за {} мс", DIVIDER_SHOW_TIMEOUT.as_millis());
 }
 
 fn stuck() -> std::sync::MutexGuard<'static, Vec<u32>> {
