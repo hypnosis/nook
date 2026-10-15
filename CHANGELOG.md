@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.6] - 2026-10-15
+
+### Fixed
+- After a reboot `<` could end up far left, off screen, and stop responding to clicks. Nook no longer loses the place of its own items when it recreates them, and on a first launch puts `<` at the right end of the menu bar.
+
+### Changed
+- Strict watchdog: if `<` is off screen, under the notch or out of order with `|`, Nook expands the menu bar, refuses to hide anything and shows ⚠. A `<` that left the visible area is put back at the right end once per launch.
+
 ## [0.4.5] - 2026-10-05
 
 ### Changed
