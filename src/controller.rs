@@ -13,7 +13,7 @@
 //! (`layout`) решает состав и порядок, панель и редактор показывают её вид.
 
 use std::cell::{Cell, RefCell};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
@@ -21,7 +21,8 @@ use objc2::MainThreadMarker;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly, Message};
 use objc2::sel;
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSButton,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSApplicationDidChangeScreenParametersNotification, NSButton, NSEvent,
     NSControlStateValueOn, NSEventType, NSImage, NSScreen, NSStatusItem, NSSwitch, NSWindow,
     NSWindowDidBecomeKeyNotification, NSWindowDidMoveNotification, NSWindowWillCloseNotification,
 };
@@ -30,7 +31,7 @@ use objc2_foundation::{
 };
 
 use crate::auto_collapse::{self, MouseMonitor};
-use crate::bar::Snapshot;
+use crate::bar::{Order, Snapshot};
 use crate::layout::{Change, Layout};
 use crate::onboarding::Onboarding;
 use crate::panel::Panel;
@@ -41,7 +42,8 @@ use crate::status_bar::{
 use crate::strings::{self, Lang};
 use crate::tuning::{
     ANCHOR_MAX_RETRIES, DIVIDER_SETTLE_DELAY, HIDDEN_WIDTH_MARGIN, HIDDEN_WIDTH_MAX, HIDING_WIDTH_MIN,
-    MOVE_WATCHDOG, MOVE_WATCHDOG_POLL, NARROW_ITEM_WIDTH, PANEL_REFRESH_INTERVAL, PLACEMENT_CHECK_INTERVAL,
+    MOVE_WATCHDOG, MOVE_WATCHDOG_POLL, NARROW_ITEM_WIDTH, ORDER_BAD_READS, ORDER_CHECK_INTERVAL,
+    PANEL_REFRESH_INTERVAL, PLACEMENT_CHECK_INTERVAL, SCREEN_SETTLE,
     PLACEMENT_ESCALATE_AFTER, PLACEMENT_MAX_ATTEMPTS, POSITION_TOLERANCE, SCREEN_WIDTH_FALLBACK,
 };
 
@@ -65,6 +67,14 @@ pub struct ControllerIvars {
     spacer_retries: Cell<u32>,
     /// Сколько проверок размещения прошло без успеха.
     placement_attempts: Cell<u32>,
+    /// Порядок элементов Nook нарушен: ничего не прячется, на якоре ⚠.
+    blocked: Cell<bool>,
+    /// Сколько проверок подряд сторож видит нарушение.
+    bad_reads: Cell<u32>,
+    /// `<` уже переставлялся крайним правым в этом запуске.
+    anchor_repaired: Cell<bool>,
+    /// Когда сменились экраны: строка в это время раскладывается заново.
+    screens_changed: Cell<Option<Instant>>,
     /// Стартовое авто-скрытие уже запущено: его зовут и событие NSWindowDidMove, и таймер.
     placement_done: Cell<bool>,
     /// Идёт старт: строка раскрыта, пока не сняты иконки панели.
@@ -125,6 +135,14 @@ define_class!(
                 );
             }
             crate::theme::observe(target);
+            unsafe {
+                NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
+                    target,
+                    sel!(onScreensChanged:),
+                    Some(NSApplicationDidChangeScreenParametersNotification),
+                    None,
+                );
+            }
 
             // FALLBACK-таймер: если айтем ЗАЛИП на x=0 без события — пересоздаёт его
             // (retry + эскалация). Размещение асинхронно, поэтому через таймер, а не
@@ -378,6 +396,80 @@ define_class!(
             }
         }
 
+        /// Сторож: нарушение, державшееся несколько проверок подряд, блокирует скрытие и ставит ⚠;
+        /// `<` за краем или под чёлкой один раз за запуск переставляется крайним правым.
+        #[unsafe(method(onOrderCheck:))]
+        fn on_order_check(&self, _timer: *mut AnyObject) {
+            let settling = self
+                .ivars()
+                .screens_changed
+                .get()
+                .is_some_and(|at| at.elapsed() < Duration::from_secs_f64(SCREEN_SETTLE));
+            if self.ivars().moving.get() || NSEvent::pressedMouseButtons() != 0 || settling {
+                return;
+            }
+            let (order, coords) = crate::bar::nook_order(self.notch_edge());
+            match order {
+                Order::Unknown => {}
+                Order::Ok => {
+                    self.ivars().bad_reads.set(0);
+                    if self.ivars().blocked.replace(false) {
+                        if let Some(items) = self.ivars().items.borrow().as_ref() {
+                            let symbol = if self.ivars().hidden.get() { ANCHOR_SYMBOL_HIDDEN } else { ANCHOR_SYMBOL_SHOWN };
+                            status_bar::set_anchor_symbol(items, self.mtm(), symbol);
+                        }
+                        log::info!("сторож: порядок восстановлен — {coords}");
+                        self.request_read();
+                    }
+                }
+                Order::Misordered | Order::Hidden => {
+                    let bad = self.ivars().bad_reads.get() + 1;
+                    self.ivars().bad_reads.set(bad);
+                    if bad < ORDER_BAD_READS {
+                        return;
+                    }
+                    self.show_blocked(order, &coords);
+                    if order == Order::Hidden && !self.ivars().anchor_repaired.replace(true) {
+                        let target: &AnyObject = self.as_ref();
+                        unsafe {
+                            NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                                0.0,
+                                target,
+                                sel!(onRepairAnchor:),
+                                None,
+                                false,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        /// `<` не виден: пересоздаётся крайним правым, панель встаёт под новое окно.
+        #[unsafe(method(onRepairAnchor:))]
+        fn on_repair_anchor(&self, _timer: *mut AnyObject) {
+            {
+                let mut items_ref = self.ivars().items.borrow_mut();
+                let Some(items) = items_ref.as_mut() else { return };
+                let target: &AnyObject = self.as_ref();
+                unsafe { status_bar::place_anchor_rightmost(items, self.mtm(), target, self.ivars().lang) };
+                status_bar::set_anchor_symbol(items, self.mtm(), ANCHOR_SYMBOL_BLOCKED);
+            }
+            log::warn!("сторож: `<` не виден — переставлен крайним правым");
+            self.bump_epoch();
+            self.ivars().bad_reads.set(0);
+            if let Some(items) = self.ivars().items.borrow().as_ref() {
+                self.sync_panel(items, self.ivars().hidden.get());
+            }
+        }
+
+        /// Экраны сменились: строка раскладывается заново, сторож переждёт.
+        #[unsafe(method(onScreensChanged:))]
+        fn on_screens_changed(&self, _notification: &NSNotification) {
+            self.ivars().screens_changed.set(Some(Instant::now()));
+            self.ivars().bad_reads.set(0);
+        }
+
         /// Строка прочитана. Сначала разделитель получает нужную ширину, потом модель
         /// принимает чтение, потом панель и редактор показывают её вид.
         #[unsafe(method(onBarRead))]
@@ -599,6 +691,10 @@ impl Controller {
             anchor_retries: Cell::new(ANCHOR_MAX_RETRIES),
             spacer_retries: Cell::new(ANCHOR_MAX_RETRIES),
             placement_attempts: Cell::new(0),
+            blocked: Cell::new(false),
+            bad_reads: Cell::new(0),
+            anchor_repaired: Cell::new(false),
+            screens_changed: Cell::new(None),
             placement_done: Cell::new(false),
             starting: Cell::new(false),
             restore_on_start: Cell::new(false),
@@ -671,10 +767,13 @@ impl Controller {
 
         let going_to_hide = !self.ivars().hidden.get();
 
-        // GUARD: прячем только если спейсер реально левее якоря.
-        if going_to_hide && !self.spacer_is_left_of_anchor(items) {
-            self.show_blocked(items);
-            return;
+        // GUARD: прячем только если спейсер реально левее якоря и порядок цел.
+        if going_to_hide {
+            let (order, coords) = crate::bar::nook_order(self.notch_edge());
+            if order != Order::Ok || self.ivars().blocked.get() {
+                self.show_blocked(order, &coords);
+                return;
+            }
         }
 
         self.ivars().hidden.set(going_to_hide);
@@ -770,6 +869,9 @@ impl Controller {
             return false;
         }
         let Some(wanted) = snapshot.hiding_width() else { return false };
+        if self.ivars().blocked.get() || crate::bar::nook_order(self.notch_edge()).0 != Order::Ok {
+            return false;
+        }
         let current = self.ivars().divider.borrow().as_ref().map(|divider| divider.length());
         if current.is_none_or(|current| (current - wanted).abs() <= POSITION_TOLERANCE) {
             return false;
@@ -877,6 +979,16 @@ impl Controller {
         }
 
         self.ivars().placement_done.set(true);
+        let target: &AnyObject = self.as_ref();
+        unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                ORDER_CHECK_INTERVAL,
+                target,
+                sel!(onOrderCheck:),
+                None,
+                true,
+            );
+        }
         // Отписываемся от событий перемещения — стартовая настройка завершена.
         let observer: &AnyObject = self.as_ref();
         unsafe {
@@ -957,6 +1069,13 @@ impl Controller {
         self.arm_move_watchdog();
     }
 
+    /// Правый край чёлки основного экрана, где живут иконки строки; без чёлки — `None`.
+    fn notch_edge(&self) -> Option<f64> {
+        let screens = NSScreen::screens(self.mtm());
+        let area = screens.firstObject()?.auxiliaryTopRightArea();
+        (area.size.width > 0.0).then_some(area.origin.x)
+    }
+
     fn notch_right(&self) -> f64 {
         NSScreen::mainScreen(self.mtm()).map_or(0.0, |screen| screen.auxiliaryTopRightArea().origin.x)
     }
@@ -1015,33 +1134,6 @@ impl Controller {
         *self.ivars().collapse_timer.borrow_mut() = Some(timer);
     }
 
-    /// Проверка порядка: оба айтема размещены (x>0) И спейсер строго левее якоря.
-    /// Ужесточено: x==0 значит «не размещён», а НЕ «левее» — иначе раздувание от
-    /// нуля растягивало бы спейсер через весь экран и уносило якорь.
-    /// Если координаты невалидны — безопасный отказ (лучше не спрятать, чем уронить).
-    fn spacer_is_left_of_anchor(&self, items: &StatusItems) -> bool {
-        let mtm = self.mtm();
-        let spacer_x = status_bar::item_origin_x(&items.spacer, mtm);
-        let anchor_x = status_bar::item_origin_x(&items.anchor, mtm);
-
-        match (spacer_x, anchor_x) {
-            (Some(sx), Some(ax)) => {
-                // Оба размещены, и спейсер строго левее якоря.
-                let placed = sx > UNPLACED_X && ax > UNPLACED_X;
-                let ok = placed && sx < ax;
-                if !ok {
-                    let why = if placed { "правее якоря" } else { "не размещён" };
-                    log::debug!("guard: spacer.x={sx} anchor.x={ax} — спейсер {why}");
-                }
-                ok
-            }
-            _ => {
-                log::debug!("guard: координаты ещё недоступны → отказ (безопасно)");
-                false
-            }
-        }
-    }
-
     /// Показывает контекстное меню у кнопки якоря (правый клик).
     /// Меню строится здесь и показывается вручную — НЕ через statusItem.menu,
     /// чтобы не перехватывать левый клик.
@@ -1066,9 +1158,22 @@ impl Controller {
     }
 
     /// Показывает знак блокировки на якоре и оставляет всё как есть.
-    fn show_blocked(&self, items: &StatusItems) {
+    /// Порядок нарушен: спейсер и разделитель узкие, иконки раскрыты, на якоре ⚠.
+    fn show_blocked(&self, order: Order, coords: &str) {
+        if self.ivars().hidden.get() {
+            self.toggle();
+        }
+        let items_ref = self.ivars().items.borrow();
+        let Some(items) = items_ref.as_ref() else { return };
+        items.spacer.setLength(NARROW_ITEM_WIDTH);
+        if let Some(divider) = self.ivars().divider.borrow().as_ref() {
+            divider.setLength(NARROW_ITEM_WIDTH);
+        }
         status_bar::set_anchor_symbol(items, self.mtm(), ANCHOR_SYMBOL_BLOCKED);
-        log::warn!("СТОП: спейсер не левее якоря — скрытие заблокировано, показываю ⚠");
+        if !self.ivars().blocked.replace(true) {
+            self.bump_epoch();
+            log::error!("СТОП: {order:?} — скрытие заблокировано, показываю ⚠ ({coords})");
+        }
     }
 
     /// Ширина спейсера в скрытом состоянии: ширина экрана + запас, ограниченная.

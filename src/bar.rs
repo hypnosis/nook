@@ -10,6 +10,7 @@ use objc2::runtime::AnyObject;
 use objc2::{msg_send, MainThreadMarker};
 use objc2_app_kit::NSApplication;
 
+use crate::capture::IconWindow;
 use crate::layout::{Icon, Reading};
 use crate::tuning::{
     BAR_POLL, HIDING_WIDTH_MIN, NARROW_WINDOW_MAX, PANEL_CAPTURE_DELAY, POSITION_TOLERANCE, SCREEN_MARGIN,
@@ -68,6 +69,57 @@ impl Snapshot {
         Some(width.max(HIDING_WIDTH_MIN))
     }
 }
+
+/// Состояние элементов Nook в строке.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Order {
+    /// `<` виден, разделитель левее `|`, `|` левее `<`.
+    Ok,
+    /// Окна ещё нет или оно не размещено: ждём.
+    Unknown,
+    /// `<` виден, но порядок нарушен.
+    Misordered,
+    /// `<` за краем или под чёлкой.
+    Hidden,
+}
+
+/// Вердикт по окнам Nook в строке; строка — их координаты для журнала.
+pub fn nook_order(notch_right: Option<f64>) -> (Order, String) {
+    let windows = crate::capture::icon_layout();
+    let find = |name: &str| windows.iter().find(|window| window.name == name);
+    let anchor = find(crate::status_bar::ANCHOR_AUTOSAVE);
+    let spacer = find(crate::status_bar::SPACER_AUTOSAVE);
+    let divider = find(crate::divider::AUTOSAVE);
+    let at = |window: Option<&IconWindow>| window.map(|w| format!("{}+{}{}", w.x, w.width, if w.onscreen { "" } else { " скрыт" }));
+    let coords = format!("< {:?}, | {:?}, разделитель {:?}, чёлка {notch_right:?}", at(anchor), at(spacer), at(divider));
+    if !windows.iter().any(|window| window.onscreen) {
+        return (Order::Unknown, format!("строка меню скрыта; {coords}"));
+    }
+    (classify(anchor, spacer, divider, notch_right), coords)
+}
+
+fn classify(
+    anchor: Option<&IconWindow>,
+    spacer: Option<&IconWindow>,
+    divider: Option<&IconWindow>,
+    notch_right: Option<f64>,
+) -> Order {
+    let (Some(anchor), Some(spacer)) = (anchor, spacer) else { return Order::Unknown };
+    if anchor.x == UNPLACED_X || spacer.x == UNPLACED_X {
+        return Order::Unknown;
+    }
+    if !anchor.onscreen || notch_right.is_some_and(|notch| anchor.x < notch) {
+        return Order::Hidden;
+    }
+    let divider_x = divider.filter(|divider| divider.width > 0.0 && divider.x != UNPLACED_X).map(|divider| divider.x);
+    if spacer.x >= anchor.x || divider_x.is_some_and(|x| x >= spacer.x) {
+        return Order::Misordered;
+    }
+    Order::Ok
+}
+
+/// x окна, которое macOS ещё не разместила.
+const UNPLACED_X: f64 = 0.0;
 
 static LATEST: Mutex<Option<Snapshot>> = Mutex::new(None);
 
@@ -142,4 +194,64 @@ fn read(epoch: u64, owners: bool) -> Option<Snapshot> {
         }
     }
     Some(Snapshot { epoch, icons, divider, spacer_x })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn window(x: f64, width: f64, onscreen: bool) -> IconWindow {
+        IconWindow { id: 0, name: String::new(), x, width, height: 24.0, onscreen }
+    }
+
+    const NOTCH: Option<f64> = Some(828.0);
+
+    #[test]
+    fn expanded_in_order_is_ok() {
+        let (a, s, d) = (window(1102.0, 32.0, true), window(1080.0, 14.0, true), window(900.0, 500.0, false));
+        assert_eq!(classify(Some(&a), Some(&s), Some(&d), NOTCH), Order::Ok);
+    }
+
+    #[test]
+    fn collapsed_spacer_off_screen_is_ok() {
+        let (a, s) = (window(1102.0, 32.0, true), window(-602.0, 1698.0, false));
+        assert_eq!(classify(Some(&a), Some(&s), None, NOTCH), Order::Ok);
+    }
+
+    #[test]
+    fn anchor_left_of_spacer_is_misordered() {
+        let (a, s) = (window(900.0, 32.0, true), window(1113.0, 14.0, true));
+        assert_eq!(classify(Some(&a), Some(&s), None, NOTCH), Order::Misordered);
+    }
+
+    #[test]
+    fn divider_right_of_spacer_is_misordered() {
+        let (a, s, d) = (window(1102.0, 32.0, true), window(1000.0, 14.0, true), window(1050.0, 14.0, true));
+        assert_eq!(classify(Some(&a), Some(&s), Some(&d), NOTCH), Order::Misordered);
+    }
+
+    #[test]
+    fn anchor_under_notch_is_hidden() {
+        let (a, s) = (window(800.0, 32.0, true), window(700.0, 14.0, true));
+        assert_eq!(classify(Some(&a), Some(&s), None, NOTCH), Order::Hidden);
+    }
+
+    #[test]
+    fn anchor_off_screen_is_hidden() {
+        let (a, s) = (window(8.0, 32.0, false), window(1155.0, 14.0, true));
+        assert_eq!(classify(Some(&a), Some(&s), None, NOTCH), Order::Hidden);
+    }
+
+    #[test]
+    fn no_notch_checks_only_order() {
+        let (a, s) = (window(300.0, 32.0, true), window(200.0, 14.0, true));
+        assert_eq!(classify(Some(&a), Some(&s), None, None), Order::Ok);
+    }
+
+    #[test]
+    fn unplaced_or_missing_is_unknown() {
+        let (a, s) = (window(0.0, 32.0, true), window(1000.0, 14.0, true));
+        assert_eq!(classify(Some(&a), Some(&s), None, NOTCH), Order::Unknown);
+        assert_eq!(classify(None, Some(&s), None, NOTCH), Order::Unknown);
+    }
 }

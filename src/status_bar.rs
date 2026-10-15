@@ -25,13 +25,13 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{sel, AnyThread, MainThreadMarker};
 use objc2_app_kit::{NSEventMask, NSImage, NSStatusBar, NSStatusItem, NSVariableStatusItemLength};
-use objc2_foundation::{NSData, NSSize, NSString};
+use objc2_foundation::{NSData, NSSize, NSString, NSUserDefaults};
 
 use crate::strings::{self, Lang};
-use crate::tuning::NARROW_ITEM_WIDTH;
+use crate::tuning::{ANCHOR_DEFAULT_PLACE, NARROW_ITEM_WIDTH, SPACER_DEFAULT_PLACE};
 
 /// Стабильные имена автосохранения позиций (Cmd+drag переживает перезапуск).
-const ANCHOR_AUTOSAVE: &str = "nook-anchor";
+pub const ANCHOR_AUTOSAVE: &str = "nook-anchor";
 pub const SPACER_AUTOSAVE: &str = "nook-spacer";
 
 /// SF Symbol спейсера-cutter (decrease.indent — нативный аналог list-indent-decrease).
@@ -57,6 +57,12 @@ pub struct StatusItems {
 /// `target` должен жить не меньше айтемов и реализовывать `action`.
 pub unsafe fn create(mtm: MainThreadMarker, target: &AnyObject, lang: Lang) -> StatusItems {
     let bar = NSStatusBar::systemStatusBar();
+    if saved_place(SPACER_AUTOSAVE).is_none() {
+        write_place(SPACER_AUTOSAVE, SPACER_DEFAULT_PLACE);
+    }
+    if saved_place(ANCHOR_AUTOSAVE).is_none() {
+        write_place(ANCHOR_AUTOSAVE, ANCHOR_DEFAULT_PLACE);
+    }
 
     // Спейсер создаётся ПЕРВЫМ: macOS добавляет новые статус-айтемы слева от
     // существующих, и иначе спейсер может не получить слот и упасть на x=0.
@@ -114,15 +120,28 @@ pub unsafe fn recreate_anchor(
     lang: Lang,
 ) {
     let bar = NSStatusBar::systemStatusBar();
-    bar.removeStatusItem(&items.anchor);
+    remove_keeping_place(&bar, &items.anchor, ANCHOR_AUTOSAVE);
     log::info!("retry: удалил застрявший якорь, создаю заново");
+    items.anchor = make_anchor(&bar, mtm, target, lang);
+}
+
+/// Пересоздаёт якорь крайним правым: правее него только системные значки.
+pub unsafe fn place_anchor_rightmost(
+    items: &mut StatusItems,
+    mtm: MainThreadMarker,
+    target: &AnyObject,
+    lang: Lang,
+) {
+    let bar = NSStatusBar::systemStatusBar();
+    bar.removeStatusItem(&items.anchor);
+    write_place(ANCHOR_AUTOSAVE, ANCHOR_DEFAULT_PLACE);
     items.anchor = make_anchor(&bar, mtm, target, lang);
 }
 
 /// ИТЕРАЦИЯ 4b-retry: пересоздаёт спейсер, если застрял на x=0.
 pub unsafe fn recreate_spacer(items: &mut StatusItems, mtm: MainThreadMarker, lang: Lang) {
     let bar = NSStatusBar::systemStatusBar();
-    bar.removeStatusItem(&items.spacer);
+    remove_keeping_place(&bar, &items.spacer, SPACER_AUTOSAVE);
     log::info!("retry: удалил застрявший спейсер, создаю заново");
     items.spacer = make_spacer(&bar, mtm, lang);
 }
@@ -137,8 +156,8 @@ pub unsafe fn recreate_both(
     lang: Lang,
 ) {
     let bar = NSStatusBar::systemStatusBar();
-    bar.removeStatusItem(&items.spacer);
-    bar.removeStatusItem(&items.anchor);
+    remove_keeping_place(&bar, &items.spacer, SPACER_AUTOSAVE);
+    remove_keeping_place(&bar, &items.anchor, ANCHOR_AUTOSAVE);
     log::info!("retry-эскалация: удалил ОБА айтема, пересоздаю композицию");
     items.spacer = make_spacer(&bar, mtm, lang);
     items.anchor = make_anchor(&bar, mtm, target, lang);
@@ -195,6 +214,32 @@ fn set_button_blocked_icon(button: &objc2_app_kit::NSStatusBarButton) -> bool {
             log::warn!("blocked-иконка (blocked.png) не распарсилась");
             false
         }
+    }
+}
+
+/// Место элемента в строке, которое помнит macOS: расстояние от правого края экрана.
+pub fn saved_place(autosave: &str) -> Option<f64> {
+    let key = place_key(autosave);
+    let defaults = NSUserDefaults::standardUserDefaults();
+    defaults.objectForKey(&key)?;
+    Some(defaults.doubleForKey(&key))
+}
+
+/// Место, записанное до создания элемента, macOS использует при его размещении.
+fn write_place(autosave: &str, place: f64) {
+    NSUserDefaults::standardUserDefaults().setDouble_forKey(place, &place_key(autosave));
+}
+
+fn place_key(autosave: &str) -> Retained<NSString> {
+    NSString::from_str(&format!("NSStatusItem Preferred Position {autosave}"))
+}
+
+/// Удаление элемента стирает его место: оно возвращается сразу после удаления.
+fn remove_keeping_place(bar: &NSStatusBar, item: &NSStatusItem, autosave: &str) {
+    let place = saved_place(autosave);
+    bar.removeStatusItem(item);
+    if let Some(place) = place {
+        write_place(autosave, place);
     }
 }
 

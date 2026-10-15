@@ -7,7 +7,7 @@
 use objc2::rc::Retained;
 use objc2::{AnyThread, MainThreadMarker};
 use objc2_app_kit::{NSImage, NSStatusBar, NSStatusItem};
-use objc2_foundation::{NSSize, NSString, NSUserDefaults};
+use objc2_foundation::{NSSize, NSString};
 
 use crate::tuning::NARROW_ITEM_WIDTH;
 
@@ -28,6 +28,5 @@ pub fn create(mtm: MainThreadMarker) -> Retained<NSStatusItem> {
 
 /// macOS помнит место разделителя в строке. Пока разделитель невидим, места она не помнит.
 pub fn has_saved_place() -> bool {
-    let key = NSString::from_str(&format!("NSStatusItem Preferred Position {AUTOSAVE}"));
-    NSUserDefaults::standardUserDefaults().objectForKey(&key).is_some()
+    crate::status_bar::saved_place(AUTOSAVE).is_some()
 }
