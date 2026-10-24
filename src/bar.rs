@@ -13,8 +13,8 @@ use objc2_app_kit::NSApplication;
 use crate::capture::IconWindow;
 use crate::layout::{Icon, Reading};
 use crate::tuning::{
-    BAR_POLL, HIDING_WIDTH_MIN, NARROW_WINDOW_MAX, PANEL_CAPTURE_DELAY, POSITION_TOLERANCE, SCREEN_MARGIN,
-    WINDOW_CHROME,
+    BAR_POLL, HIDING_WIDTH_MIN, NARROW_ITEM_WIDTH, NARROW_WINDOW_MAX, NOTCH_CLEARANCE, PANEL_CAPTURE_DELAY,
+    POSITION_TOLERANCE, SCREEN_MARGIN, SHROUD_MARGIN, WINDOW_CHROME,
 };
 
 /// Окно иконки в прочитанной строке.
@@ -38,9 +38,11 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Стороны разделителя. Разделителя нет или он узкий — `None`.
+    /// Стороны разделителя. Узкий разделитель, которого macOS спрятала, — `None`: иконкам у
+    /// чёлки она даёт условные x, и стороны по ним не определить. Длинный спрятан всегда,
+    /// и всё левее него уходит за ним по порядку.
     pub fn reading(&self) -> Option<Reading> {
-        let divider = self.divider.as_ref().filter(|divider| divider.width > NARROW_WINDOW_MAX)?;
+        let divider = self.divider.as_ref().filter(|divider| divider.onscreen || divider.width > NARROW_WINDOW_MAX)?;
         let icon = |slot: &Slot| Icon { id: slot.id, key: slot.key.clone(), drawn: slot.onscreen };
         let (panel, main): (Vec<&Slot>, Vec<&Slot>) = self.icons.iter().partition(|slot| slot.x < divider.x);
         Some(Reading { panel: panel.into_iter().map(icon).collect(), main: main.into_iter().map(icon).collect() })
@@ -52,21 +54,57 @@ impl Snapshot {
         (panel.iter().map(|slot| slot.id).collect(), main.iter().map(|slot| slot.id).collect())
     }
 
-    /// Длина разделителя, при которой иконки левее него спрятаны, а крайняя левая
-    /// стоит на экране: там её снимает панель и нажимает Accessibility.
-    pub fn hiding_width(&self) -> Option<f64> {
+    /// x первой иконки основного ряда, без основного ряда — x спейсера.
+    pub fn main_left(&self) -> Option<f64> {
         let divider = self.divider.as_ref()?;
-        let panel_width: f64 = self.icons.iter().filter(|slot| slot.x < divider.x).map(|slot| slot.width).sum();
-        let next_x = self
-            .icons
-            .iter()
-            .find(|slot| slot.x > divider.x + POSITION_TOLERANCE)
-            .map_or(self.spacer_x, |slot| slot.x);
-        let width = next_x - WINDOW_CHROME - panel_width - SCREEN_MARGIN;
-        if width < HIDING_WIDTH_MIN {
+        Some(self.icons.iter().find(|slot| slot.x > divider.x + POSITION_TOLERANCE).map_or(self.spacer_x, |slot| slot.x))
+    }
+
+    /// Длина разделителя. Узкий, пока справа от чёлки хватает места ему и самой широкой иконке
+    /// панели: иконки панели стоят у чёлки. Иначе, и когда macOS спрятала узкий, — самый короткий
+    /// из тех, что macOS прячет всегда: иконки панели встают вплотную левее него, ближе к чёлке.
+    pub fn divider_length(&self, notch_right: Option<f64>) -> Option<f64> {
+        let divider = self.divider.as_ref()?;
+        let main_left = self.main_left()?;
+        let panel: Vec<&Slot> = self.icons.iter().filter(|slot| slot.x < divider.x).collect();
+        let evicted = divider.width <= NARROW_WINDOW_MAX && !divider.onscreen;
+        let widest = panel.iter().map(|slot| slot.width).fold(0.0, f64::max);
+        let room = notch_right.map_or(f64::INFINITY, |notch| main_left - notch);
+        if !evicted && room >= NOTCH_CLEARANCE + NARROW_ITEM_WIDTH + WINDOW_CHROME + widest {
+            return Some(NARROW_ITEM_WIDTH);
+        }
+        let panel_width: f64 = panel.iter().map(|slot| slot.width).sum();
+        if main_left - WINDOW_CHROME - HIDING_WIDTH_MIN - panel_width < SCREEN_MARGIN {
             log::warn!("иконок панели слишком много ({panel_width} pt) — часть уйдёт за край");
         }
-        Some(width.max(HIDING_WIDTH_MIN))
+        Some(HIDING_WIDTH_MIN)
+    }
+
+    /// Для журнала: сколько нарисованных иконок панели не закрыто полосой `shown` и сколько
+    /// иконок основного ряда macOS не нарисовала.
+    pub fn shroud_report(&self, shown: Option<(f64, f64)>) -> (usize, usize) {
+        let Some(divider) = self.divider.as_ref() else { return (0, 0) };
+        let covered = |slot: &Slot| {
+            shown.is_some_and(|(left, right)| {
+                slot.x >= left - POSITION_TOLERANCE && slot.x + slot.width <= right + POSITION_TOLERANCE
+            })
+        };
+        let outside = self.icons.iter().filter(|slot| slot.onscreen && slot.x < divider.x && !covered(slot)).count();
+        let main_hidden = self.icons.iter().filter(|slot| !slot.onscreen && slot.x > divider.x).count();
+        (outside, main_hidden)
+    }
+
+    /// Полоса шторки (левый и правый x): от самой левой нарисованной иконки панели с запасом
+    /// на подсветку до основного ряда. Иконок панели в строке не видно или разделитель не нарисован — `None`.
+    pub fn shroud_strip(&self) -> Option<(f64, f64)> {
+        let divider = self.divider.as_ref().filter(|divider| divider.onscreen)?;
+        let left = self
+            .icons
+            .iter()
+            .filter(|slot| slot.onscreen && slot.x < divider.x)
+            .map(|slot| slot.x - SHROUD_MARGIN)
+            .reduce(f64::min)?;
+        Some((left, self.main_left()?))
     }
 }
 
@@ -193,6 +231,15 @@ fn read(epoch: u64, owners: bool) -> Option<Snapshot> {
             icons.push(slot);
         }
     }
+    let at = |slot: &Slot| {
+        let hidden = if slot.onscreen { "" } else { " скрыт" };
+        format!("{}:{}@{:.0}+{:.0}{hidden}", slot.id, slot.key.as_deref().unwrap_or("?"), slot.x, slot.width)
+    };
+    log::debug!(
+        "строка: иконки [{}], разделитель {:?}, спейсер @{spacer_x:.0}",
+        icons.iter().map(at).collect::<Vec<_>>().join(", "),
+        divider.as_ref().map(at)
+    );
     Some(Snapshot { epoch, icons, divider, spacer_x })
 }
 
@@ -246,6 +293,85 @@ mod tests {
     fn no_notch_checks_only_order() {
         let (a, s) = (window(300.0, 32.0, true), window(200.0, 14.0, true));
         assert_eq!(classify(Some(&a), Some(&s), None, None), Order::Ok);
+    }
+
+    fn slot(x: f64, width: f64, onscreen: bool) -> Slot {
+        Slot { id: x as u32, x, width, onscreen, key: None }
+    }
+
+    /// Узкий разделитель на 935: две иконки панели под чёлкой, две нарисованы справа от неё.
+    fn narrow_bar(divider_onscreen: bool) -> Snapshot {
+        Snapshot {
+            epoch: 0,
+            icons: vec![
+                slot(794.0, 34.0, false),
+                slot(828.0, 33.0, false),
+                slot(861.0, 34.0, true),
+                slot(895.0, 40.0, true),
+                slot(963.0, 45.0, true),
+                slot(1008.0, 34.0, true),
+            ],
+            divider: Some(slot(935.0, 28.0, divider_onscreen)),
+            spacer_x: 1122.0,
+        }
+    }
+
+    #[test]
+    fn shroud_covers_drawn_panel_icons_up_to_main_row() {
+        assert_eq!(narrow_bar(true).shroud_strip(), Some((861.0 - SHROUD_MARGIN, 963.0)));
+    }
+
+    #[test]
+    fn shroud_reaches_spacer_without_main_row() {
+        let mut bar = narrow_bar(true);
+        bar.icons.truncate(4);
+        assert_eq!(bar.shroud_strip(), Some((861.0 - SHROUD_MARGIN, 1122.0)));
+    }
+
+    #[test]
+    fn no_shroud_without_drawn_panel_icons() {
+        let mut bar = narrow_bar(true);
+        bar.icons[2].onscreen = false;
+        bar.icons[3].onscreen = false;
+        assert_eq!(bar.shroud_strip(), None);
+    }
+
+    #[test]
+    fn no_shroud_when_divider_hidden() {
+        assert_eq!(narrow_bar(false).shroud_strip(), None);
+        let mut bar = narrow_bar(true);
+        bar.divider = None;
+        assert_eq!(bar.shroud_strip(), None);
+    }
+
+    #[test]
+    fn narrow_while_room_for_divider_and_widest_panel_icon() {
+        assert_eq!(narrow_bar(true).divider_length(NOTCH), Some(NARROW_ITEM_WIDTH));
+    }
+
+    #[test]
+    fn evicted_narrow_divider_turns_long() {
+        assert_eq!(narrow_bar(false).divider_length(NOTCH), Some(HIDING_WIDTH_MIN));
+        assert!(narrow_bar(false).reading().is_none());
+    }
+
+    #[test]
+    fn tight_room_keeps_divider_long_and_room_brings_it_back() {
+        let mut bar = narrow_bar(true);
+        for (slot, x) in bar.icons.iter_mut().zip([20.0, 54.0, 88.0, 121.0]) {
+            slot.x = x;
+            slot.onscreen = false;
+        }
+        bar.divider = Some(slot(161.0, 802.0, false));
+        assert_eq!(bar.divider_length(NOTCH), Some(NARROW_ITEM_WIDTH), "места до Docker хватает");
+        assert!(bar.reading().is_some(), "длинному спрятанному разделителю строка верит");
+        bar.icons[4].x = 894.0;
+        assert_eq!(bar.divider_length(NOTCH), Some(HIDING_WIDTH_MIN), "тесно — остаётся длинным");
+    }
+
+    #[test]
+    fn no_notch_keeps_divider_narrow() {
+        assert_eq!(narrow_bar(true).divider_length(None), Some(NARROW_ITEM_WIDTH));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Снимки иконок строки меню для панели и редактора.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{mpsc, Arc, Mutex, PoisonError};
 
 use block2::RcBlock;
 use dispatch2::DispatchQueue;
@@ -8,17 +8,17 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, AnyThread, MainThreadMarker, Message};
 use objc2_app_kit::{NSApplication, NSImage, NSRunningApplication};
-use objc2_core_foundation::CFRetained;
+use objc2_core_foundation::{CFRetained, CGRect};
 use objc2_core_graphics::{
-    kCGNullWindowID, kCGStatusWindowLevel, CGImage, CGWindowListCopyWindowInfo,
+    kCGNullWindowID, kCGStatusWindowLevel, CGImage, CGMainDisplayID, CGWindowListCopyWindowInfo,
     CGWindowListOption,
 };
 use objc2_foundation::{NSArray, NSDictionary, NSError, NSNumber, NSSize, NSString};
 use objc2_screen_capture_kit::{
-    SCContentFilter, SCScreenshotManager, SCShareableContent, SCStreamConfiguration,
+    SCContentFilter, SCScreenshotManager, SCShareableContent, SCStreamConfiguration, SCWindow,
 };
 
-use crate::tuning::MAX_ICON_HEIGHT;
+use crate::tuning::{MAX_ICON_HEIGHT, SHOT_TIMEOUT};
 
 const CONTROL_CENTER_BUNDLE: &str = "com.apple.controlcenter";
 /// Окно системного индикатора камеры, микрофона и записи экрана: его место решает macOS,
@@ -280,6 +280,61 @@ pub fn onscreen_windows_of(pid: i32) -> Vec<u32> {
         .collect()
 }
 
+/// Снимок участка `rect` главного экрана без окон `hidden`.
+/// Блокирует поток до готовности снимка, поэтому только из фонового потока.
+pub fn screen_rect(rect: CGRect, hidden: &[u32]) -> Option<CFRetained<CGImage>> {
+    let hidden = hidden.to_vec();
+    let (sender, receiver) = mpsc::channel();
+    let handler = RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
+        let Some(content) = (unsafe { Retained::retain(content) }) else {
+            log_error("SCShareableContent", error);
+            let _ = sender.send(None);
+            return;
+        };
+        let displays = unsafe { content.displays() };
+        let Some(display) = displays.iter().find(|d| unsafe { d.displayID() } == CGMainDisplayID()) else {
+            let _ = sender.send(None);
+            return;
+        };
+        let excluded: Vec<Retained<SCWindow>> = unsafe { content.windows() }
+            .iter()
+            .filter(|window| hidden.contains(&unsafe { window.windowID() }))
+            .collect();
+        let filter = unsafe {
+            SCContentFilter::initWithDisplay_excludingWindows(
+                SCContentFilter::alloc(),
+                &display,
+                &NSArray::from_retained_slice(&excluded),
+            )
+        };
+        let scale = unsafe { filter.pointPixelScale() } as f64;
+        let config = unsafe { SCStreamConfiguration::new() };
+        unsafe {
+            config.setSourceRect(rect);
+            config.setWidth((rect.size.width * scale).round() as usize);
+            config.setHeight((rect.size.height * scale).round() as usize);
+            config.setShowsCursor(false);
+        }
+        let sender = sender.clone();
+        let done = RcBlock::new(move |image: *mut CGImage, error: *mut NSError| {
+            let image = std::ptr::NonNull::new(image).map(|image| unsafe { CFRetained::retain(image) });
+            if image.is_none() {
+                log_error("снимок участка", error);
+            }
+            let _ = sender.send(image);
+        });
+        unsafe {
+            SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(&filter, &config, Some(&done));
+        }
+    });
+    unsafe {
+        SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(
+            false, true, &handler,
+        );
+    }
+    receiver.recv_timeout(SHOT_TIMEOUT).ok().flatten()
+}
+
 /// Центры x окон `ids` в глобальных координатах CG — за один запрос списка окон.
 pub fn window_centers(ids: &[u32]) -> Vec<(u32, f64)> {
     // Запрос одного окна (OptionIncludingWindow) для иконок под чёлкой возвращает пусто.
@@ -296,6 +351,14 @@ pub fn window_centers(ids: &[u32]) -> Vec<(u32, f64)> {
             Some((id, x + width / 2.0))
         })
         .collect()
+}
+
+/// Рамка окна `id` (x, y, ширина, высота) в координатах CG.
+pub fn window_rect(id: u32) -> Option<(f64, f64, f64, f64)> {
+    let list = window_list(CGWindowListOption::OptionAll, kCGNullWindowID)?;
+    list.iter()
+        .find(|info| number(info, "kCGWindowNumber").is_some_and(|n| n.unsignedIntValue() == id))
+        .and_then(|info| bounds(&info))
 }
 
 /// CFArray из CGWindowListCopyWindowInfo бесшовно приводится к NSArray<NSDictionary>.

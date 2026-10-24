@@ -5,7 +5,7 @@ use std::time::Duration;
 
 // Строка меню: ширины и допуски, pt.
 
-/// Ширина узкого элемента строки: спейсер в показанном состоянии и разделитель в авторежиме.
+/// Ширина узкого элемента строки: спейсер в показанном состоянии и разделитель панели.
 pub const NARROW_ITEM_WIDTH: f64 = 12.0;
 /// Меньше этой ширины раздутый элемент заставляет macOS перемешивать строку.
 pub const HIDING_WIDTH_MIN: f64 = 500.0;
@@ -20,6 +20,10 @@ pub const WINDOW_CHROME: f64 = 16.0;
 pub const SCREEN_MARGIN: f64 = 20.0;
 /// Окно узкого разделителя не шире этого.
 pub const NARROW_WINDOW_MAX: f64 = 40.0;
+/// Ближе этого к правому краю чёлки macOS иконки не рисует.
+pub const NOTCH_CLEARANCE: f64 = 28.0;
+/// Подсветка нажатой иконки шире её окна: шторка начинается на столько левее самой левой иконки.
+pub const SHROUD_MARGIN: f64 = 6.0;
 /// Высота полосы строки меню с запасом: мышь ниже неё считается ушедшей.
 pub const MENU_BAR_STRIP: f64 = 40.0;
 /// Окно выше этого — не иконка строки меню.
@@ -84,6 +88,9 @@ pub const SETTLE_TIMEOUT: Duration = Duration::from_millis(250);
 pub const STILL_READS: u32 = 2;
 pub const STILL_POLL: Duration = Duration::from_millis(10);
 pub const STILL_TIMEOUT: Duration = Duration::from_millis(600);
+
+/// Сколько ждать снимка полосы строки для шторки.
+pub const SHOT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Опрос и таймауты меню, открытого кликом по копии.
 pub const MENU_POLL: Duration = Duration::from_millis(50);

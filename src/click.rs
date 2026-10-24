@@ -96,6 +96,11 @@ pub fn click_window(id: u32) {
             log::debug!("для окна {id} иконки в AX нет");
             return;
         };
+        log::debug!(
+            "AXPress по окну {id}: окно {:?}, элемент AX x={:?}",
+            crate::capture::window_rect(id),
+            frame(&item.element).map(|(x, _)| x)
+        );
         let result = unsafe {
             item.element
                 .perform_action(&CFString::from_static_str("AXPress"))

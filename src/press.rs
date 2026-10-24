@@ -48,7 +48,7 @@ fn wait_menu_closed(pid: Option<i32>, windows_before: &[u32], clicked: Instant) 
         }
         thread::sleep(MENU_POLL);
     };
-    log::debug!("клик → меню {} мс", clicked.elapsed().as_millis());
+    log::debug!("клик → меню {} мс, окно меню {menu}: {:?}", clicked.elapsed().as_millis(), crate::capture::window_rect(menu));
     let close_deadline = Instant::now() + MENU_MAX_OPEN;
     while crate::capture::onscreen_windows_of(pid).contains(&menu) {
         if Instant::now() > close_deadline {

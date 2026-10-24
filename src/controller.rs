@@ -36,6 +36,7 @@ use crate::layout::{Change, Layout};
 use crate::onboarding::Onboarding;
 use crate::panel::Panel;
 use crate::settings::Settings;
+use crate::shroud::Shroud;
 use crate::status_bar::{
     self, StatusItems, ANCHOR_SYMBOL_BLOCKED, ANCHOR_SYMBOL_HIDDEN, ANCHOR_SYMBOL_SHOWN,
 };
@@ -101,6 +102,8 @@ pub struct ControllerIvars {
     pending_drop: RefCell<Option<(u32, Vec<u32>)>>,
     /// Мышь отвязана от курсора на время переноса.
     mouse_taken: Cell<bool>,
+    /// Шторка над иконками панели у чёлки, пока строка раскрыта.
+    shroud: RefCell<Option<Shroud>>,
 }
 
 define_class!(
@@ -367,7 +370,7 @@ define_class!(
             self.arm_move_watchdog();
         }
 
-        /// Стартовый разделитель встал — читаем строку: чтение расширит разделитель и снимет
+        /// Стартовый разделитель встал — читаем строку: чтение задаст длину разделителя и снимет
         /// иконки панели. Если macOS забыла место разделителя, сначала восстанавливаем раскладку.
         #[unsafe(method(onDividerPlaced:))]
         fn on_divider_placed(&self, _timer: *mut AnyObject) {
@@ -379,7 +382,7 @@ define_class!(
             }
         }
 
-        /// Раскладка восстановлена — строка читается заново, разделитель снова широкий.
+        /// Раскладка восстановлена — строка читается заново, разделитель получит нужную длину.
         #[unsafe(method(onLayoutRestored))]
         fn on_layout_restored(&self) {
             self.give_back_mouse();
@@ -470,8 +473,29 @@ define_class!(
             self.ivars().bad_reads.set(0);
         }
 
-        /// Строка прочитана. Сначала разделитель получает нужную ширину, потом модель
-        /// принимает чтение, потом панель и редактор показывают её вид.
+        /// Готова картинка пустой полосы: шторка встаёт на неё, если строка с тех пор не менялась.
+        #[unsafe(method(onShroudPicture))]
+        fn on_shroud_picture(&self) {
+            let Some((image, rect, epoch)) = crate::shroud::take_picture() else { return };
+            if epoch != self.ivars().epoch.get() || self.ivars().hidden.get() || crate::settings::automatic_layout() {
+                return;
+            }
+            if let Some(shroud) = self.ivars().shroud.borrow_mut().as_mut() {
+                shroud.show(self.mtm(), &image, rect);
+                log::debug!("шторка: встала {:.0}..{:.0}", rect.origin.x, rect.origin.x + rect.size.width);
+            }
+        }
+
+        /// Строка свернулась и встала: иконки панели ушли за край, шторка больше не нужна.
+        #[unsafe(method(onCollapseSettled))]
+        fn on_collapse_settled(&self) {
+            if self.ivars().hidden.get() {
+                self.hide_shroud();
+            }
+        }
+
+        /// Строка прочитана. Сначала разделитель получает нужную длину, шторка встаёт над
+        /// иконками панели, потом модель принимает чтение, потом панель и редактор показывают её вид.
         #[unsafe(method(onBarRead))]
         fn on_bar_read(&self) {
             let current = |snapshot: &Snapshot| {
@@ -491,6 +515,7 @@ define_class!(
             if self.fit_divider(&snapshot, automatic) {
                 return;
             }
+            self.follow_shroud(&snapshot, automatic);
             let (panel, main) = if automatic {
                 snapshot.automatic()
             } else {
@@ -709,6 +734,7 @@ impl Controller {
             moving: Cell::new(false),
             pending_drop: RefCell::new(None),
             mouse_taken: Cell::new(false),
+            shroud: RefCell::new(None),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -783,9 +809,15 @@ impl Controller {
             (NARROW_ITEM_WIDTH, ANCHOR_SYMBOL_SHOWN)
         };
 
+        if !going_to_hide {
+            self.cover_before_expand();
+        }
         items.spacer.setLength(spacer_width);
         status_bar::set_anchor_symbol(items, self.mtm(), anchor_symbol);
         self.bump_epoch();
+        if going_to_hide {
+            self.uncover_after_collapse();
+        }
 
         // Смена состояния гасит взведённый таймер коллапса.
         self.cancel_collapse_timer();
@@ -862,13 +894,54 @@ impl Controller {
         }
     }
 
-    /// Держит ширину разделителя в ручном режиме: иконки панели спрятаны, крайняя левая
-    /// на экране. Возвращает `true`, если ширина поменялась и строка будет прочитана заново.
+    /// До раскрытия шторка встаёт на прошлое место, чтобы иконки панели не мелькнули. В первый
+    /// раз места нет: шторка закрывает всё от чёлки до `<`, первое чтение её уточнит.
+    fn cover_before_expand(&self) {
+        if crate::settings::automatic_layout() || !self.divider_narrow() {
+            return;
+        }
+        if let Some(shroud) = self.ivars().shroud.borrow().as_ref().filter(|shroud| shroud.rect().is_some()) {
+            shroud.show_again();
+            return;
+        }
+        let anchor_x = crate::capture::icon_layout()
+            .into_iter()
+            .find(|window| window.name == status_bar::ANCHOR_AUTOSAVE)
+            .map(|window| window.x);
+        match anchor_x {
+            Some(right) => self.cover_now(right),
+            None => log::debug!("шторка: окна `<` нет — первое раскрытие без шторки"),
+        }
+    }
+
+    /// Шторка сразу закрывает всё от чёлки до `right`: туда сейчас встанут иконки панели.
+    fn cover_now(&self, right: f64) {
+        let left = self.notch_edge().unwrap_or(0.0);
+        let mut shroud = self.ivars().shroud.borrow_mut();
+        let shroud = shroud.get_or_insert_with(|| Shroud::new(self.mtm()));
+        let started = Instant::now();
+        match crate::shroud::shoot_now(left, right, shroud.window_id()) {
+            Some((image, rect)) => {
+                shroud.show(self.mtm(), &image, rect);
+                log::debug!("шторка: закрыла {left:.0}..{right:.0}, снимок {} мс", started.elapsed().as_millis());
+            }
+            None => log::debug!("шторка: снимка полосы {left:.0}..{right:.0} нет"),
+        }
+    }
+
+    /// Разделитель панели сейчас узкий.
+    fn divider_narrow(&self) -> bool {
+        self.ivars().divider.borrow().as_ref().is_some_and(|divider| divider.length() <= NARROW_ITEM_WIDTH)
+    }
+
+    /// Держит длину разделителя в ручном режиме по правилу `Snapshot::divider_length`. Перед
+    /// сужением шторка закрывает место у чёлки. Возвращает `true`, если длина поменялась и строка
+    /// будет прочитана заново.
     fn fit_divider(&self, snapshot: &Snapshot, automatic: bool) -> bool {
         if automatic {
             return false;
         }
-        let Some(wanted) = snapshot.hiding_width() else { return false };
+        let Some(wanted) = snapshot.divider_length(self.notch_edge()) else { return false };
         if self.ivars().blocked.get() || crate::bar::nook_order(self.notch_edge()).0 != Order::Ok {
             return false;
         }
@@ -876,13 +949,62 @@ impl Controller {
         if current.is_none_or(|current| (current - wanted).abs() <= POSITION_TOLERANCE) {
             return false;
         }
-        log::debug!("разделитель: длина {current:?} → {wanted}");
+        log::info!("разделитель: длина {current:?} → {wanted}");
+        if wanted <= NARROW_ITEM_WIDTH {
+            if let Some(right) = snapshot.main_left() {
+                self.cover_now(right);
+            }
+        }
         if let Some(divider) = self.ivars().divider.borrow().as_ref() {
             divider.setLength(wanted);
         }
         self.bump_epoch();
         self.request_read();
         true
+    }
+
+    /// Шторка уходит, когда свёрнутая строка встанет.
+    fn uncover_after_collapse(&self) {
+        if self.ivars().shroud.borrow().is_some() {
+            crate::shroud::hide_when_still();
+        }
+    }
+
+    fn hide_shroud(&self) {
+        if let Some(shroud) = self.ivars().shroud.borrow().as_ref() {
+            shroud.hide();
+        }
+    }
+
+    /// Шторка закрывает нарисованные иконки панели по свежему чтению: полоса и картинка
+    /// пустой строки берутся заново на каждом чтении. Пока открыто меню нажатой иконки, картинка
+    /// не переснимается: подсветку иконки macOS рисует в самой строке. В авторежиме шторки нет.
+    fn follow_shroud(&self, snapshot: &Snapshot, automatic: bool) {
+        let strip = if automatic { None } else { snapshot.shroud_strip() };
+        if !automatic {
+            let shown = self
+                .ivars()
+                .shroud
+                .borrow()
+                .as_ref()
+                .filter(|shroud| shroud.is_shown())
+                .and_then(Shroud::rect)
+                .map(|rect| (rect.origin.x, rect.origin.x + rect.size.width));
+            let (outside, main_hidden) = snapshot.shroud_report(shown);
+            log::debug!(
+                "шторка: показана {shown:?}, полоса {strip:?}, иконки панели вне шторки: {outside}, основной ряд не нарисован: {main_hidden}"
+            );
+        }
+        let Some((left, right)) = strip else {
+            self.hide_shroud();
+            return;
+        };
+        if crate::press::menu_open() {
+            return;
+        }
+        let mut shroud = self.ivars().shroud.borrow_mut();
+        let shroud = shroud.get_or_insert_with(|| Shroud::new(self.mtm()));
+        crate::shroud::shoot_later(left, right, shroud.window_id(), self.ivars().epoch.get());
     }
 
     /// Разделитель в строке есть только в ручном режиме. Невидимый, он не занимает места,

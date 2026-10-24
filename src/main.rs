@@ -24,6 +24,7 @@ mod panel;
 mod permissions;
 mod press;
 mod settings;
+mod shroud;
 mod status_bar;
 mod strings;
 mod theme;
