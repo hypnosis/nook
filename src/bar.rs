@@ -1,14 +1,10 @@
 //! Чтение строки меню: единственное место, откуда раскладка узнаёт, что стоит в строке.
-//! Читает в фоне, когда строка встала, и отдаёт снимок делегату через `onBarRead`.
+//! Читает в фоне, когда строка встала, и отдаёт снимок контроллеру на главном потоке.
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::Instant;
-
-use dispatch2::DispatchQueue;
-use objc2::runtime::AnyObject;
-use objc2::{msg_send, MainThreadMarker};
-use objc2_app_kit::NSApplication;
 
 use crate::capture::IconWindow;
 use crate::layout::{Icon, Reading};
@@ -171,44 +167,44 @@ fn classify(
 /// x окна, которое macOS ещё не разместила.
 const UNPLACED_X: f64 = 0.0;
 
-static LATEST: Mutex<Option<Snapshot>> = Mutex::new(None);
+/// Очередь запросов к фоновому читателю строки: в запросе — поколение строки.
+static READER: OnceLock<Sender<u64>> = OnceLock::new();
 
-/// Читает строку в фоне: ждёт, пока она раскрыта и стоит, и зовёт `onBarRead` у делегата.
-/// Строка свёрнута — снимка нет, `take` вернёт `None`.
+/// Читает строку в фоне, когда она раскрыта и стоит, и отдаёт снимок контроллеру. Строка
+/// свёрнута — снимка нет. Запросы, пришедшие во время чтения, сливаются в одно следующее.
 pub fn read_when_still(epoch: u64) {
-    thread::spawn(move || {
+    let reader = READER.get_or_init(|| {
+        let (sender, requests) = mpsc::channel();
+        thread::spawn(move || serve(requests));
+        sender
+    });
+    if reader.send(epoch).is_err() {
+        log::error!("строка: читатель остановился — чтение не идёт");
+    }
+}
+
+fn serve(requests: Receiver<u64>) {
+    while let Ok(first) = requests.recv() {
+        let epoch = latest_epoch(first, requests.try_iter());
         let deadline = Instant::now() + PANEL_CAPTURE_DELAY;
         while spacer_x().is_none() && Instant::now() < deadline {
             thread::sleep(BAR_POLL);
         }
         let windows = crate::mover::wait_until_still();
         let snapshot = read(&windows, epoch, true);
-        let mut latest = LATEST.lock().unwrap_or_else(PoisonError::into_inner);
-        // Чтение, закончившееся позже, не затирает более свежее.
-        let older = matches!((&*latest, &snapshot), (Some(kept), Some(new)) if new.epoch < kept.epoch);
-        if !older {
-            *latest = snapshot;
-        }
-        drop(latest);
-        DispatchQueue::main().exec_async(|| {
-            let mtm = MainThreadMarker::new().expect("main queue");
-            if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
-                let delegate: &AnyObject = delegate.as_ref();
-                let _: () = unsafe { msg_send![delegate, onBarRead] };
-            }
-        });
-    });
+        crate::controller::on_main(move |controller| controller.bar_read(snapshot));
+    }
+}
+
+/// Самое свежее поколение среди накопившихся запросов.
+fn latest_epoch(first: u64, pending: impl Iterator<Item = u64>) -> u64 {
+    pending.fold(first, u64::max)
 }
 
 /// Читает строку сразу, без ожидания. С `owners` ищет приложения иконок через
 /// Accessibility — тогда не из главного потока.
 pub fn read_now(owners: bool) -> Option<Snapshot> {
     read(&crate::capture::icon_layout(), 0, owners)
-}
-
-/// Последний снимок; забирается один раз.
-pub fn take() -> Option<Snapshot> {
-    LATEST.lock().unwrap_or_else(PoisonError::into_inner).take()
 }
 
 /// Левый край спейсера, если строка раскрыта.
@@ -398,6 +394,12 @@ mod tests {
     #[test]
     fn no_notch_keeps_divider_narrow() {
         assert_eq!(narrow_bar(true).divider_length(None), Some(NARROW_ITEM_WIDTH));
+    }
+
+    #[test]
+    fn pending_reads_merge_into_the_latest_epoch() {
+        assert_eq!(latest_epoch(3, [5, 4].into_iter()), 5);
+        assert_eq!(latest_epoch(7, std::iter::empty()), 7);
     }
 
     #[test]

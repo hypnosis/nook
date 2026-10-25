@@ -44,11 +44,11 @@ impl Controller {
 
     /// Строка прочитана. Сначала разделитель получает нужную длину, шторка встаёт над
     /// иконками панели, потом модель принимает чтение, потом панель и редактор показывают её вид.
-    pub(super) fn bar_read(&self) {
+    pub(crate) fn bar_read(&self, snapshot: Option<Snapshot>) {
         let current = |snapshot: &Snapshot| {
             snapshot.epoch == self.ivars().epoch.get() && !self.ivars().moving.get() && !self.ivars().hidden.get()
         };
-        let Some(snapshot) = crate::bar::take() else {
+        let Some(snapshot) = snapshot else {
             self.finish_startup_if_stuck();
             return;
         };

@@ -15,6 +15,7 @@
 use std::cell::{Cell, RefCell};
 use std::time::Instant;
 
+use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
 use objc2::MainThreadMarker;
@@ -214,11 +215,6 @@ define_class!(
             self.shroud_after_collapse();
         }
 
-        #[unsafe(method(onBarRead))]
-        fn on_bar_read(&self) {
-            self.bar_read();
-        }
-
         #[unsafe(method(onOpenAccessibility:))]
         fn on_open_accessibility(&self, _sender: *mut AnyObject) {
             crate::permissions::open_accessibility_pane();
@@ -285,6 +281,18 @@ define_class!(
         }
     }
 );
+
+/// Выполняет `f` с контроллером на главном потоке: так фоновые потоки отдают ему результат.
+pub fn on_main(f: impl FnOnce(&Controller) + Send + 'static) {
+    DispatchQueue::main().exec_async(move || {
+        let mtm = MainThreadMarker::new().expect("main queue");
+        let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() else { return };
+        let delegate: &AnyObject = delegate.as_ref();
+        if let Some(controller) = delegate.downcast_ref::<Controller>() {
+            f(controller);
+        }
+    });
+}
 
 impl Controller {
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
