@@ -3,7 +3,7 @@
 
 use std::sync::{Mutex, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use dispatch2::DispatchQueue;
 use objc2::runtime::AnyObject;
@@ -177,7 +177,7 @@ static LATEST: Mutex<Option<Snapshot>> = Mutex::new(None);
 /// Строка свёрнута — снимка нет, `take` вернёт `None`.
 pub fn read_when_still(epoch: u64) {
     thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs_f64(PANEL_CAPTURE_DELAY);
+        let deadline = Instant::now() + PANEL_CAPTURE_DELAY;
         while spacer_x().is_none() && Instant::now() < deadline {
             thread::sleep(BAR_POLL);
         }

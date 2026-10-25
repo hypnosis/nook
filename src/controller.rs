@@ -28,7 +28,7 @@ use objc2_app_kit::{
     NSWorkspaceDidActivateApplicationNotification,
 };
 use objc2_foundation::{
-    NSArray, NSNotification, NSNotificationCenter, NSNumber, NSPoint, NSProcessInfo, NSTimer,
+    NSArray, NSNotification, NSNotificationCenter, NSNumber, NSPoint, NSProcessInfo,
 };
 
 use crate::auto_collapse::{self, MouseMonitor};
@@ -38,12 +38,13 @@ use crate::onboarding::Onboarding;
 use crate::panel::Panel;
 use crate::settings::Settings;
 use crate::shroud::Shroud;
+use crate::timer::Timer;
 use crate::status_bar::{
     self, StatusItems, ANCHOR_SYMBOL_BLOCKED, ANCHOR_SYMBOL_HIDDEN, ANCHOR_SYMBOL_SHOWN,
 };
 use crate::strings::{self, Lang};
 use crate::tuning::{
-    ANCHOR_MAX_RETRIES, DIVIDER_SETTLE_DELAY, HIDDEN_WIDTH_MARGIN, HIDDEN_WIDTH_MAX, HIDING_WIDTH_MIN,
+    ANCHOR_MAX_RETRIES, COLLAPSE_DELAY, DIVIDER_SETTLE_DELAY, HIDDEN_WIDTH_MARGIN, HIDDEN_WIDTH_MAX, HIDING_WIDTH_MIN,
     MOVE_WATCHDOG, MOVE_WATCHDOG_POLL, NARROW_ITEM_WIDTH, ORDER_BAD_READS, ORDER_CHECK_INTERVAL,
     PANEL_REFRESH_INTERVAL, PLACEMENT_CHECK_INTERVAL, SCREEN_SETTLE,
     PLACEMENT_ESCALATE_AFTER, PLACEMENT_MAX_ATTEMPTS, POSITION_TOLERANCE, SCREEN_WIDTH_FALLBACK,
@@ -61,7 +62,7 @@ pub struct ControllerIvars {
     items: RefCell<Option<StatusItems>>,
     hidden: Cell<bool>,
     monitor: RefCell<Option<MouseMonitor>>,
-    collapse_timer: RefCell<Option<Retained<NSTimer>>>,
+    collapse_timer: RefCell<Option<Timer>>,
     lang: Lang,
     /// Сколько раз ещё можно пересоздать застрявший якорь.
     anchor_retries: Cell<u32>,
@@ -83,9 +84,13 @@ pub struct ControllerIvars {
     restore_on_start: Cell<bool>,
     panel: RefCell<Option<Panel>>,
     /// Таймер чтения строки: живёт, пока строка раскрыта.
-    bar_timer: RefCell<Option<Retained<NSTimer>>>,
+    bar_timer: RefCell<Option<Timer>>,
     /// Таймер сторожа: живёт, пока строка раскрыта и элементы Nook размещены.
-    order_timer: RefCell<Option<Retained<NSTimer>>>,
+    order_timer: RefCell<Option<Timer>>,
+    /// Таймер проверки размещения на старте: живёт, пока элементы Nook не встали.
+    placement_timer: RefCell<Option<Timer>>,
+    /// Таймер сторожа переноса: живёт, пока идёт перенос.
+    move_watchdog: RefCell<Option<Timer>>,
     settings: RefCell<Option<Settings>>,
     /// Окно разрешений: создаётся при запуске, если какого-то разрешения нет.
     onboarding: RefCell<Option<Onboarding>>,
@@ -156,19 +161,11 @@ define_class!(
                 );
             }
 
-            // FALLBACK-таймер: если айтем ЗАЛИП на x=0 без события — пересоздаёт его
-            // (retry + эскалация). Размещение асинхронно, поэтому через таймер, а не
-            // синхронно: синхронная блокировка ломает размещение.
+            // Запасная проверка: элемент, застрявший на x=0 без события, пересоздаётся.
+            // Размещение асинхронно: синхронное ожидание его ломает.
             let target: &AnyObject = self.as_ref();
-            unsafe {
-                NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-                    PLACEMENT_CHECK_INTERVAL,
-                    target,
-                    sel!(onPlacementCheck:),
-                    None,
-                    true,
-                );
-            }
+            *self.ivars().placement_timer.borrow_mut() =
+                Some(Timer::repeating(target, PLACEMENT_CHECK_INTERVAL, sel!(onPlacementCheck:)));
             let main_menu = unsafe { crate::menu::main_menu(mtm, target, self.ivars().lang) };
             NSApplication::sharedApplication(mtm).setMainMenu(Some(&main_menu));
             self.show_onboarding_if_needed();
@@ -368,7 +365,7 @@ define_class!(
             if !self.ivars().mouse_taken.get() {
                 return;
             }
-            if crate::mover::is_stalled(Duration::from_secs_f64(MOVE_WATCHDOG)) {
+            if crate::mover::is_stalled(MOVE_WATCHDOG) {
                 log::warn!("бросок: перенос завис — возвращаю мышь");
                 crate::mover::cancel();
                 self.give_back_mouse();
@@ -419,7 +416,7 @@ define_class!(
                 .ivars()
                 .screens_changed
                 .get()
-                .is_some_and(|at| at.elapsed() < Duration::from_secs_f64(SCREEN_SETTLE));
+                .is_some_and(|at| at.elapsed() < SCREEN_SETTLE);
             if self.ivars().moving.get() || NSEvent::pressedMouseButtons() != 0 || settling {
                 return;
             }
@@ -567,7 +564,7 @@ define_class!(
         /// Когда ОБА размещены — запускает стартовое авто-скрытие и останавливается.
         /// Так первый toggle гарантированно идёт по валидным координатам.
         #[unsafe(method(onPlacementCheck:))]
-        fn on_placement_check(&self, timer: *mut AnyObject) {
+        fn on_placement_check(&self, _timer: *mut AnyObject) {
             let mtm = self.mtm();
             let (sx, ax) = {
                 let items_ref = self.ivars().items.borrow();
@@ -584,7 +581,7 @@ define_class!(
 
             // Оба размещены → общий финиш (событие могло уже его сделать) + стоп таймера.
             if both_ok {
-                self.stop_placement_timer(timer);
+                self.ivars().placement_timer.borrow_mut().take();
                 self.finish_placement_if_ready();
                 return;
             }
@@ -593,7 +590,7 @@ define_class!(
             let attempts = self.ivars().placement_attempts.get() + 1;
             self.ivars().placement_attempts.set(attempts);
             if attempts >= PLACEMENT_MAX_ATTEMPTS {
-                self.stop_placement_timer(timer);
+                self.ivars().placement_timer.borrow_mut().take();
                 log::warn!("placement: лимит попыток исчерпан — сдаюсь (guard защитит)");
                 return;
             }
@@ -735,6 +732,8 @@ impl Controller {
             panel: RefCell::new(None),
             bar_timer: RefCell::new(None),
             order_timer: RefCell::new(None),
+            placement_timer: RefCell::new(None),
+            move_watchdog: RefCell::new(None),
             settings: RefCell::new(None),
             onboarding: RefCell::new(None),
             divider: RefCell::new(None),
@@ -850,23 +849,13 @@ impl Controller {
     fn sync_panel(&self, items: &StatusItems, hidden: bool) {
         self.watch_order(!hidden && self.ivars().placement_done.get());
         if hidden {
-            if let Some(timer) = self.ivars().bar_timer.borrow_mut().take() {
-                timer.invalidate();
-            }
+            self.ivars().bar_timer.borrow_mut().take();
         } else {
             self.request_read();
             let target: &AnyObject = self.as_ref();
             let mut timer = self.ivars().bar_timer.borrow_mut();
             if timer.is_none() {
-                *timer = Some(unsafe {
-                    NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-                        PANEL_REFRESH_INTERVAL,
-                        target,
-                        sel!(onBarTick:),
-                        None,
-                        true,
-                    )
-                });
+                *timer = Some(Timer::repeating(target, PANEL_REFRESH_INTERVAL, sel!(onBarTick:)));
             }
         }
         let mut panel = self.ivars().panel.borrow_mut();
@@ -889,23 +878,13 @@ impl Controller {
     fn watch_order(&self, on: bool) {
         let mut timer = self.ivars().order_timer.borrow_mut();
         if !on {
-            if let Some(timer) = timer.take() {
-                timer.invalidate();
+            if timer.take().is_some() {
                 self.ivars().bad_reads.set(0);
             }
             return;
         }
         if timer.is_none() {
-            let target: &AnyObject = self.as_ref();
-            *timer = Some(unsafe {
-                NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-                    ORDER_CHECK_INTERVAL,
-                    target,
-                    sel!(onOrderCheck:),
-                    None,
-                    true,
-                )
-            });
+            *timer = Some(Timer::repeating(self.as_ref(), ORDER_CHECK_INTERVAL, sel!(onOrderCheck:)));
         }
     }
 
@@ -921,18 +900,9 @@ impl Controller {
         }
     }
 
-    /// Читает строку через `delay` секунд, когда macOS разложит её после действия Nook.
-    fn read_after(&self, delay: f64) {
-        let target: &AnyObject = self.as_ref();
-        unsafe {
-            NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-                delay,
-                target,
-                sel!(onBarTick:),
-                None,
-                false,
-            );
-        }
+    /// Читает строку через `delay`, когда macOS разложит её после действия Nook.
+    fn read_after(&self, delay: Duration) {
+        crate::timer::after(self.as_ref(), delay, sel!(onBarTick:));
     }
 
     /// До раскрытия шторка встаёт на прошлое место, чтобы иконки панели не мелькнули. В первый
@@ -1128,13 +1098,6 @@ impl Controller {
         dragging || self.ivars().moving.get()
     }
 
-    /// Останавливает таймер проверки размещения (по сырому указателю из колбэка).
-    fn stop_placement_timer(&self, timer: *mut AnyObject) {
-        if let Some(t) = unsafe { (timer as *const NSTimer).as_ref() } {
-            t.invalidate();
-        }
-    }
-
     /// Завершает стартовую настройку, КОГДА оба айтема размещены (x>0).
     /// Вызывается и из события NSWindowDidMove (основной триггер), и из
     /// fallback-таймера. Идемпотентно: срабатывает один раз (флаг placement_done),
@@ -1175,16 +1138,7 @@ impl Controller {
         self.ivars().restore_on_start.set(!automatic && !crate::divider::has_saved_place());
         *self.ivars().divider.borrow_mut() = Some(crate::divider::create(self.mtm()));
         self.show_divider(!automatic);
-        let target: &AnyObject = self.as_ref();
-        unsafe {
-            NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-                DIVIDER_SETTLE_DELAY,
-                target,
-                sel!(onDividerPlaced:),
-                None,
-                false,
-            );
-        }
+        crate::timer::after(self.as_ref(), DIVIDER_SETTLE_DELAY, sel!(onDividerPlaced:));
     }
 
     /// Возвращает мышь, если она забрана; повторный вызов ничего не делает.
@@ -1260,17 +1214,10 @@ impl Controller {
         self.arm_move_watchdog();
     }
 
+    /// Сторож переноса проверит его через `MOVE_WATCHDOG_POLL`; прошлая проверка отменяется.
     fn arm_move_watchdog(&self) {
-        let target: &AnyObject = self.as_ref();
-        unsafe {
-            NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-                MOVE_WATCHDOG_POLL,
-                target,
-                sel!(onMoveWatchdog:),
-                None,
-                false,
-            );
-        }
+        let timer = Timer::once(self.as_ref(), MOVE_WATCHDOG_POLL, sel!(onMoveWatchdog:));
+        *self.ivars().move_watchdog.borrow_mut() = Some(timer);
     }
 
     /// Запускает монитор мыши, если ещё не запущен.
@@ -1291,16 +1238,13 @@ impl Controller {
 
     /// Гасит взведённый таймер коллапса, если он есть.
     fn cancel_collapse_timer(&self) {
-        if let Some(timer) = self.ivars().collapse_timer.borrow_mut().take() {
-            timer.invalidate();
-        }
+        self.ivars().collapse_timer.borrow_mut().take();
     }
 
     /// Взводит таймер коллапса (мышь ушла из полосы). Через COLLAPSE_DELAY
     /// сработает onAutoCollapse: и свернёт, если мышь не вернулась.
     fn arm_collapse_timer(&self) {
-        let target: &AnyObject = self.as_ref();
-        let timer = auto_collapse::make_collapse_timer(target);
+        let timer = Timer::once(self.as_ref(), COLLAPSE_DELAY, sel!(onAutoCollapse:));
         *self.ivars().collapse_timer.borrow_mut() = Some(timer);
     }
 

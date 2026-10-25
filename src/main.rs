@@ -28,6 +28,7 @@ mod shroud;
 mod status_bar;
 mod strings;
 mod theme;
+mod timer;
 mod tuning;
 mod ui_style;
 

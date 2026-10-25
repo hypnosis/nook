@@ -12,25 +12,10 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::MainThreadMarker;
-use objc2::{msg_send, sel};
+use objc2::msg_send;
 use objc2_app_kit::{NSEvent, NSEventMask, NSScreen};
-use objc2_foundation::NSTimer;
 
-use crate::tuning::{COLLAPSE_DELAY, MENU_BAR_STRIP};
-
-/// Создаёт одноразовый таймер коллапса. Через COLLAPSE_DELAY вызовет
-/// `onAutoCollapse:` на target (контроллере).
-pub fn make_collapse_timer(target: &AnyObject) -> Retained<NSTimer> {
-    unsafe {
-        NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-            COLLAPSE_DELAY,
-            target,
-            sel!(onAutoCollapse:),
-            None,
-            false,
-        )
-    }
-}
+use crate::tuning::MENU_BAR_STRIP;
 
 /// Мышь сейчас в полосе menu bar активного (верхнего) экрана?
 pub fn mouse_in_menu_bar_strip(mtm: MainThreadMarker) -> bool {
