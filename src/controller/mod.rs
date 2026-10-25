@@ -20,8 +20,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
 use objc2::MainThreadMarker;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly};
-use objc2_app_kit::{NSApplication, NSApplicationDelegate, NSButton, NSImage, NSScreen, NSStatusItem, NSSwitch};
-use objc2_foundation::{NSArray, NSNotification, NSNumber};
+use objc2_app_kit::{NSApplication, NSApplicationDelegate, NSButton, NSScreen, NSStatusItem, NSSwitch};
+use objc2_foundation::NSNotification;
 
 use crate::auto_collapse::MouseMonitor;
 use crate::layout::Layout;
@@ -157,11 +157,6 @@ define_class!(
             self.editor_needs_icons();
         }
 
-        #[unsafe(method(setEditorIcons:ids:))]
-        fn set_editor_icons(&self, images: &NSArray<NSImage>, ids: &NSArray<NSNumber>) {
-            self.show_editor_icons(images, ids);
-        }
-
         #[unsafe(method(onTileDropped:))]
         fn on_tile_dropped(&self, id: u32) {
             self.tile_dropped(id);
@@ -242,11 +237,6 @@ define_class!(
         #[unsafe(method(onMouseMoved))]
         fn on_mouse_moved(&self) {
             self.mouse_moved();
-        }
-
-        #[unsafe(method(setPanelIcons:ids:))]
-        fn set_panel_icons(&self, images: &NSArray<NSImage>, ids: &NSArray<NSNumber>) {
-            self.show_panel_icons(images, ids);
         }
 
         #[unsafe(method(onThemeChanged:))]

@@ -32,7 +32,7 @@ impl Controller {
 
     /// Картинки для редактора готовы — он выстраивает их по модели.
     /// Пока иконку тянут или переносят, редактор не трогаем.
-    pub(super) fn show_editor_icons(&self, images: &NSArray<NSImage>, ids: &NSArray<NSNumber>) {
+    pub(crate) fn show_editor_icons(&self, images: &NSArray<NSImage>, ids: &NSArray<NSNumber>) {
         if self.editor_busy() {
             return;
         }
@@ -90,7 +90,7 @@ impl Controller {
     }
 
     /// Снимки иконок панели готовы. На старте после них строка сворачивается.
-    pub(super) fn show_panel_icons(&self, images: &NSArray<NSImage>, ids: &NSArray<NSNumber>) {
+    pub(crate) fn show_panel_icons(&self, images: &NSArray<NSImage>, ids: &NSArray<NSNumber>) {
         let target: &AnyObject = self.as_ref();
         self.ivars()
             .panel

@@ -3,11 +3,10 @@
 use std::sync::{mpsc, Arc, Mutex, PoisonError};
 
 use block2::RcBlock;
-use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{msg_send, AnyThread, MainThreadMarker, Message};
-use objc2_app_kit::{NSApplication, NSImage, NSRunningApplication};
+use objc2::{AnyThread, Message};
+use objc2_app_kit::{NSImage, NSRunningApplication};
 use objc2_core_foundation::{CFRetained, CGRect};
 use objc2_core_graphics::{
     kCGNullWindowID, kCGStatusWindowLevel, CGImage, CGMainDisplayID, CGWindowListCopyWindowInfo,
@@ -53,13 +52,13 @@ struct Shot {
 /// Снимки по местам и сколько ещё ждать.
 type Shots = Arc<Mutex<(Vec<Option<Shot>>, usize)>>;
 
-/// Снимает иконки с окнами `ids` и по готовности отдаёт панели через делегата
-/// приложения `setPanelIcons:ids:` — картинки и номера окон в порядке `ids`.
+/// Снимает иконки с окнами `ids` и по готовности отдаёт панели картинки и номера окон в
+/// порядке `ids`.
 pub fn capture_for_panel(ids: &[u32]) {
     capture(windows_in_order(ids), Receiver::Panel);
 }
 
-/// Снимает иконки с окнами `ids` для редактора: делегату через `setEditorIcons:ids:`.
+/// Снимает иконки с окнами `ids` для редактора.
 pub fn capture_for_editor(ids: &[u32]) {
     capture(windows_in_order(ids), Receiver::Editor);
 }
@@ -188,10 +187,9 @@ fn finish_one(
     }
 }
 
-/// Переносит снимки в главный поток и отдаёт делегату приложения.
+/// Переносит снимки в главный поток и отдаёт контроллеру.
 fn deliver(shots: Vec<Shot>, receiver: Receiver) {
-    DispatchQueue::main().exec_async(move || {
-        let mtm = MainThreadMarker::new().expect("main queue");
+    crate::controller::on_main(move |controller| {
         let images: Vec<Retained<NSImage>> = shots
             .iter()
             .map(|shot| {
@@ -208,16 +206,9 @@ fn deliver(shots: Vec<Shot>, receiver: Receiver) {
             .collect();
         let images = NSArray::from_retained_slice(&images);
         let ids = NSArray::from_retained_slice(&ids);
-        if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
-            let delegate: &AnyObject = delegate.as_ref();
-            let _: () = match receiver {
-                Receiver::Panel => unsafe {
-                    msg_send![delegate, setPanelIcons: &*images, ids: &*ids]
-                },
-                Receiver::Editor => unsafe {
-                    msg_send![delegate, setEditorIcons: &*images, ids: &*ids]
-                },
-            };
+        match receiver {
+            Receiver::Panel => controller.show_panel_icons(&images, &ids),
+            Receiver::Editor => controller.show_editor_icons(&images, &ids),
         }
     });
 }
