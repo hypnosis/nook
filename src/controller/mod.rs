@@ -162,11 +162,6 @@ define_class!(
             self.tile_dropped(id);
         }
 
-        #[unsafe(method(onTileMoved))]
-        fn on_tile_moved(&self) {
-            self.tile_moved();
-        }
-
         #[unsafe(method(onMoveWatchdog:))]
         fn on_move_watchdog(&self, _timer: *mut AnyObject) {
             self.check_move();
@@ -175,11 +170,6 @@ define_class!(
         #[unsafe(method(onDividerPlaced:))]
         fn on_divider_placed(&self, _timer: *mut AnyObject) {
             self.divider_placed();
-        }
-
-        #[unsafe(method(onLayoutRestored))]
-        fn on_layout_restored(&self) {
-            self.layout_restored();
         }
 
         /// Чтение строки по таймеру.

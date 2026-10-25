@@ -43,7 +43,7 @@ impl Controller {
     }
 
     /// Перенос закончен: строка читается заново, модель видит перестановку.
-    pub(super) fn tile_moved(&self) {
+    pub(crate) fn tile_moved(&self) {
         self.give_back_mouse();
         self.set_moving(false);
         self.bump_epoch();
@@ -71,7 +71,7 @@ impl Controller {
     }
 
     /// Раскладка восстановлена — строка читается заново, разделитель получит нужную длину.
-    pub(super) fn layout_restored(&self) {
+    pub(crate) fn layout_restored(&self) {
         self.give_back_mouse();
         self.set_moving(false);
         self.bump_epoch();

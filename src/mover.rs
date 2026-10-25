@@ -8,10 +8,6 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use dispatch2::DispatchQueue;
-use objc2::runtime::AnyObject;
-use objc2::{msg_send, MainThreadMarker};
-use objc2_app_kit::NSApplication;
 use objc2_core_foundation::{kCFBooleanTrue, CFString, CFType, CGPoint};
 use objc2_core_graphics::{
     kCGEventFilterMaskPermitAllEvents, CGAssociateMouseAndMouseCursorPosition, CGDisplayHideCursor,
@@ -139,7 +135,7 @@ fn is_cancelled() -> bool {
 }
 
 /// Ставит одну иконку `id` левее `before` и правее `after` (соседи по строке, один из них
-/// может быть разделителем) и сообщает `onTileMoved`, что перенос закончен. Иконка, которая
+/// может быть разделителем) и сообщает контроллеру, что перенос закончен. Иконка, которая
 /// не приняла ни один способ переноса, до перезапуска Nook больше не переносится.
 /// `notch_right` — правый край чёлки: левее него иконку не отпускаем.
 pub fn move_one(id: u32, before: Option<u32>, after: Option<u32>, notch_right: f64) {
@@ -169,13 +165,7 @@ pub fn move_one(id: u32, before: Option<u32>, after: Option<u32>, notch_right: f
             started.elapsed().as_millis()
         );
         *last_step() = None;
-        DispatchQueue::main().exec_async(move || {
-            let mtm = MainThreadMarker::new().expect("main queue");
-            if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
-                let delegate: &AnyObject = delegate.as_ref();
-                let _: () = unsafe { msg_send![delegate, onTileMoved] };
-            }
-        });
+        crate::controller::on_main(|controller| controller.tile_moved());
     });
 }
 
@@ -183,7 +173,7 @@ pub fn move_one(id: u32, before: Option<u32>, after: Option<u32>, notch_right: f
 /// правее. Иконка панели — с окном из `panel_ids` или с ключом из `panel_keys`; ключи ищутся,
 /// только если окон модель ещё не знает. Переносятся только чужие иконки, к разделителю:
 /// событие, пришедшее в сам Nook, показывает спрятанный курсор. Курсор спрятан заранее,
-/// на главном потоке; по окончании зовёт `onLayoutRestored`.
+/// на главном потоке; по окончании сообщает контроллеру.
 pub fn restore(panel_ids: Vec<u32>, panel_keys: Vec<String>, notch_right: f64) {
     let run = RUN.fetch_add(1, Ordering::SeqCst) + 1;
     *last_step() = Some(Instant::now());
@@ -217,13 +207,7 @@ pub fn restore(panel_ids: Vec<u32>, panel_keys: Vec<String>, notch_right: f64) {
         CGWarpMouseCursorPosition(home);
         log::info!("раскладка: восстановлена за {} мс, переносов {moves}", started.elapsed().as_millis());
         *last_step() = None;
-        DispatchQueue::main().exec_async(move || {
-            let mtm = MainThreadMarker::new().expect("main queue");
-            if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
-                let delegate: &AnyObject = delegate.as_ref();
-                let _: () = unsafe { msg_send![delegate, onLayoutRestored] };
-            }
-        });
+        crate::controller::on_main(|controller| controller.layout_restored());
     });
 }
 
