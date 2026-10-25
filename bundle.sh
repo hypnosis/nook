@@ -10,14 +10,14 @@ BINARY_NAME="${SLUG}"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 
 echo "==> Building ${APP_NAME}..."
-cargo build
+cargo build --release
 
 echo "==> Creating .app bundle structure..."
 mkdir -p "${APP_DIR}/Contents/MacOS"
 mkdir -p "${APP_DIR}/Contents/Resources"
 
 echo "==> Copying binary..."
-cp "target/debug/${BINARY_NAME}" "${APP_DIR}/Contents/MacOS/${BINARY_NAME}"
+cp "target/release/${BINARY_NAME}" "${APP_DIR}/Contents/MacOS/${BINARY_NAME}"
 
 echo "==> Copying app icon..."
 cp "assets/Nook.icns" "${APP_DIR}/Contents/Resources/Nook.icns"
