@@ -67,7 +67,7 @@ fn wait_menu_closed(pid: Option<i32>, windows_before: &[u32], clicked: Instant, 
     WINDOWS_OPEN.fetch_add(1, Ordering::SeqCst);
     let close_deadline = Instant::now() + MENU_MAX_OPEN;
     let mut capped = false;
-    while crate::capture::onscreen_windows_of(pid).contains(&menu) {
+    while crate::capture::window_onscreen(menu, pid) {
         if !capped && Instant::now() > close_deadline {
             capped = true;
             release();

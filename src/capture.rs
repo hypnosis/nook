@@ -13,7 +13,7 @@ use objc2_core_graphics::{
     kCGNullWindowID, kCGStatusWindowLevel, CGImage, CGMainDisplayID, CGWindowListCopyWindowInfo,
     CGWindowListOption,
 };
-use objc2_foundation::{NSArray, NSDictionary, NSError, NSNumber, NSSize, NSString};
+use objc2_foundation::{ns_string, NSArray, NSDictionary, NSError, NSNumber, NSSize, NSString};
 use objc2_screen_capture_kit::{
     SCContentFilter, SCScreenshotManager, SCShareableContent, SCStreamConfiguration, SCWindow,
 };
@@ -235,23 +235,25 @@ fn icon_windows(keep: impl Fn(&IconWindow) -> bool) -> Vec<IconWindow> {
     let mut windows: Vec<(f64, IconWindow)> = list
         .iter()
         .filter_map(|info| {
-            let layer = number(&info, "kCGWindowLayer")?.intValue();
-            let pid = number(&info, "kCGWindowOwnerPID")?.intValue();
-            let onscreen = number(&info, "kCGWindowIsOnscreen").is_some_and(|n| n.boolValue());
-            let id = number(&info, "kCGWindowNumber")?.unsignedIntValue();
+            let layer = number(&info, ns_string!("kCGWindowLayer"))?.intValue();
+            let pid = number(&info, ns_string!("kCGWindowOwnerPID"))?.intValue();
+            if layer as isize != kCGStatusWindowLevel as isize || pid != owner_pid {
+                return None;
+            }
+            let (x, y, width, height) = bounds(&info)?;
+            if y != 0.0 || height > MAX_ICON_HEIGHT {
+                return None;
+            }
             let name = info
-                .objectForKey(&NSString::from_str("kCGWindowName"))
+                .objectForKey(ns_string!("kCGWindowName"))
                 .and_then(|v| v.downcast::<NSString>().ok())
                 .map(|s| s.to_string())
                 .unwrap_or_default();
-            let (x, y, width, height) = bounds(&info)?;
-
-            let is_icon = layer as isize == kCGStatusWindowLevel as isize
-                && pid == owner_pid
-                && y == 0.0
-                && height <= MAX_ICON_HEIGHT
-                && !name.contains("Clone")
-                && name != PRIVACY_INDICATOR;
+            if name.contains("Clone") || name == PRIVACY_INDICATOR {
+                return None;
+            }
+            let onscreen = number(&info, ns_string!("kCGWindowIsOnscreen")).is_some_and(|n| n.boolValue());
+            let id = number(&info, ns_string!("kCGWindowNumber"))?.unsignedIntValue();
             let window = IconWindow {
                 id,
                 name,
@@ -260,7 +262,7 @@ fn icon_windows(keep: impl Fn(&IconWindow) -> bool) -> Vec<IconWindow> {
                 height,
                 onscreen,
             };
-            (is_icon && keep(&window)).then_some((x, window))
+            keep(&window).then_some((x, window))
         })
         .collect();
     windows.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -274,10 +276,19 @@ pub fn onscreen_windows_of(pid: i32) -> Vec<u32> {
     };
     list.iter()
         .filter(|info| {
-            number(info, "kCGWindowOwnerPID").is_some_and(|owner| owner.intValue() == pid)
+            number(info, ns_string!("kCGWindowOwnerPID")).is_some_and(|owner| owner.intValue() == pid)
         })
-        .filter_map(|info| number(&info, "kCGWindowNumber").map(|n| n.unsignedIntValue()))
+        .filter_map(|info| number(&info, ns_string!("kCGWindowNumber")).map(|n| n.unsignedIntValue()))
         .collect()
+}
+
+/// Окно `id` процесса `pid` на экране. Сначала спрашивается одно окно; ответ «нет» проверяется
+/// по полному списку окон на экране.
+pub fn window_onscreen(id: u32, pid: i32) -> bool {
+    let single = window_list(CGWindowListOption::OptionIncludingWindow, id)
+        .and_then(|list| list.firstObject())
+        .is_some_and(|info| number(&info, ns_string!("kCGWindowIsOnscreen")).is_some_and(|n| n.boolValue()));
+    single || onscreen_windows_of(pid).contains(&id)
 }
 
 /// Снимок участка `rect` главного экрана без окон `hidden`.
@@ -343,7 +354,7 @@ pub fn window_centers(ids: &[u32]) -> Vec<(u32, f64)> {
     };
     list.iter()
         .filter_map(|info| {
-            let id = number(&info, "kCGWindowNumber")?.unsignedIntValue();
+            let id = number(&info, ns_string!("kCGWindowNumber"))?.unsignedIntValue();
             if !ids.contains(&id) {
                 return None;
             }
@@ -357,7 +368,7 @@ pub fn window_centers(ids: &[u32]) -> Vec<(u32, f64)> {
 pub fn window_rect(id: u32) -> Option<(f64, f64, f64, f64)> {
     let list = window_list(CGWindowListOption::OptionAll, kCGNullWindowID)?;
     list.iter()
-        .find(|info| number(info, "kCGWindowNumber").is_some_and(|n| n.unsignedIntValue() == id))
+        .find(|info| number(info, ns_string!("kCGWindowNumber")).is_some_and(|n| n.unsignedIntValue() == id))
         .and_then(|info| bounds(&info))
 }
 
@@ -374,21 +385,21 @@ fn window_list(
 
 fn bounds(info: &NSDictionary<NSString, AnyObject>) -> Option<(f64, f64, f64, f64)> {
     let bounds = info
-        .objectForKey(&NSString::from_str("kCGWindowBounds"))?
+        .objectForKey(ns_string!("kCGWindowBounds"))?
         .downcast::<NSDictionary>()
         .ok()?;
-    let bound = |key: &str| -> Option<f64> {
+    let bound = |key: &NSString| -> Option<f64> {
         bounds
-            .objectForKey(&NSString::from_str(key))?
+            .objectForKey(key)?
             .downcast::<NSNumber>()
             .ok()
             .map(|n| n.doubleValue())
     };
-    Some((bound("X")?, bound("Y")?, bound("Width")?, bound("Height")?))
+    Some((bound(ns_string!("X"))?, bound(ns_string!("Y"))?, bound(ns_string!("Width"))?, bound(ns_string!("Height"))?))
 }
 
-fn number(info: &NSDictionary<NSString, AnyObject>, key: &str) -> Option<Retained<NSNumber>> {
-    info.objectForKey(&NSString::from_str(key))?
+fn number(info: &NSDictionary<NSString, AnyObject>, key: &NSString) -> Option<Retained<NSNumber>> {
+    info.objectForKey(key)?
         .downcast::<NSNumber>()
         .ok()
 }

@@ -450,21 +450,21 @@ fn permit_local_events() {
 }
 
 /// Ждёт, пока строка меню доиграет анимацию: `STILL_READS` замеров подряд совпали
-/// с предыдущим.
-pub fn wait_until_still() {
-    let positions = || -> Vec<(u32, f64)> {
-        crate::capture::icon_layout().iter().map(|window| (window.id, window.x)).collect()
-    };
+/// с предыдущим. Возвращает окна иконок последнего замера.
+pub fn wait_until_still() -> Vec<IconWindow> {
+    let positions = |windows: &[IconWindow]| -> Vec<(u32, f64)> { windows.iter().map(|window| (window.id, window.x)).collect() };
     let deadline = Instant::now() + STILL_TIMEOUT;
-    let mut last = positions();
+    let mut windows = crate::capture::icon_layout();
+    let mut last = positions(&windows);
     let mut unchanged = 0;
     while Instant::now() < deadline {
         thread::sleep(STILL_POLL);
-        let now = positions();
+        windows = crate::capture::icon_layout();
+        let now = positions(&windows);
         if now == last {
             unchanged += 1;
             if unchanged == STILL_READS {
-                return;
+                return windows;
             }
         } else {
             unchanged = 0;
@@ -472,6 +472,7 @@ pub fn wait_until_still() {
         }
     }
     log::debug!("строка меню не успокоилась — считаю по последнему замеру");
+    windows
 }
 
 /// Cmd+drag: нажать, (провести через середину,) довести до цели и отпустить.

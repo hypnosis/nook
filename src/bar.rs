@@ -181,8 +181,8 @@ pub fn read_when_still(epoch: u64) {
         while spacer_x().is_none() && Instant::now() < deadline {
             thread::sleep(BAR_POLL);
         }
-        crate::mover::wait_until_still();
-        let snapshot = read(epoch, true);
+        let windows = crate::mover::wait_until_still();
+        let snapshot = read(&windows, epoch, true);
         let mut latest = LATEST.lock().unwrap_or_else(PoisonError::into_inner);
         // Чтение, закончившееся позже, не затирает более свежее.
         let older = matches!((&*latest, &snapshot), (Some(kept), Some(new)) if new.epoch < kept.epoch);
@@ -203,7 +203,7 @@ pub fn read_when_still(epoch: u64) {
 /// Читает строку сразу, без ожидания. С `owners` ищет приложения иконок через
 /// Accessibility — тогда не из главного потока.
 pub fn read_now(owners: bool) -> Option<Snapshot> {
-    read(0, owners)
+    read(&crate::capture::icon_layout(), 0, owners)
 }
 
 /// Последний снимок; забирается один раз.
@@ -219,8 +219,7 @@ fn spacer_x() -> Option<f64> {
         .map(|window| window.x)
 }
 
-fn read(epoch: u64, owners: bool) -> Option<Snapshot> {
-    let windows = crate::capture::icon_layout();
+fn read(windows: &[IconWindow], epoch: u64, owners: bool) -> Option<Snapshot> {
     let spacer = windows.iter().find(|window| window.name == crate::status_bar::SPACER_AUTOSAVE)?;
     if !spacer.onscreen {
         return None;

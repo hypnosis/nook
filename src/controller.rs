@@ -84,6 +84,8 @@ pub struct ControllerIvars {
     panel: RefCell<Option<Panel>>,
     /// Таймер чтения строки: живёт, пока строка раскрыта.
     bar_timer: RefCell<Option<Retained<NSTimer>>>,
+    /// Таймер сторожа: живёт, пока строка раскрыта и элементы Nook размещены.
+    order_timer: RefCell<Option<Retained<NSTimer>>>,
     settings: RefCell<Option<Settings>>,
     /// Окно разрешений: создаётся при запуске, если какого-то разрешения нет.
     onboarding: RefCell<Option<Onboarding>>,
@@ -732,6 +734,7 @@ impl Controller {
             restore_on_start: Cell::new(false),
             panel: RefCell::new(None),
             bar_timer: RefCell::new(None),
+            order_timer: RefCell::new(None),
             settings: RefCell::new(None),
             onboarding: RefCell::new(None),
             divider: RefCell::new(None),
@@ -845,6 +848,7 @@ impl Controller {
     /// Панель открыта ровно тогда, когда иконки раскрыты; пока они раскрыты, строка
     /// читается по таймеру.
     fn sync_panel(&self, items: &StatusItems, hidden: bool) {
+        self.watch_order(!hidden && self.ivars().placement_done.get());
         if hidden {
             if let Some(timer) = self.ivars().bar_timer.borrow_mut().take() {
                 timer.invalidate();
@@ -878,6 +882,31 @@ impl Controller {
         panel
             .get_or_insert_with(|| Panel::new(self.mtm()))
             .show_below(&anchor_window);
+    }
+
+    /// Сторож сверяет порядок, пока строка раскрыта. В свёрнутой строке он не нужен: перед
+    /// сворачиванием порядок проверяет `toggle`.
+    fn watch_order(&self, on: bool) {
+        let mut timer = self.ivars().order_timer.borrow_mut();
+        if !on {
+            if let Some(timer) = timer.take() {
+                timer.invalidate();
+                self.ivars().bad_reads.set(0);
+            }
+            return;
+        }
+        if timer.is_none() {
+            let target: &AnyObject = self.as_ref();
+            *timer = Some(unsafe {
+                NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                    ORDER_CHECK_INTERVAL,
+                    target,
+                    sel!(onOrderCheck:),
+                    None,
+                    true,
+                )
+            });
+        }
     }
 
     /// Nook сам меняет строку: чтения, начатые раньше, не принимаются.
@@ -1129,16 +1158,7 @@ impl Controller {
         }
 
         self.ivars().placement_done.set(true);
-        let target: &AnyObject = self.as_ref();
-        unsafe {
-            NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-                ORDER_CHECK_INTERVAL,
-                target,
-                sel!(onOrderCheck:),
-                None,
-                true,
-            );
-        }
+        self.watch_order(!self.ivars().hidden.get());
         // Отписываемся от событий перемещения — стартовая настройка завершена.
         let observer: &AnyObject = self.as_ref();
         unsafe {
