@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.9] - 2026-10-26
+
+### Fixed
+- The menu bar collapses by itself after a copy's menu is closed; before, auto-collapse was lost if it fired while the menu was open.
+- The saved panel is what you set in the editor. A move of Nook's own that misses no longer rewrites it: Nook retries once and keeps the saved order. Switching automatic layout off and on brings back the same panel.
+- Restoring the panel after automatic layout is faster, and the mouse is taken only while an icon is actually moving.
+- Editor drops work while the menu bar is collapsed: Nook expands it first, and tiles stay locked until the move is checked against the menu bar.
+- With `<` out of order, the editor no longer shows `<` itself as a tile.
+- A possible crash when Nook recreated its menu bar items while macOS sent a window notification.
+
+### Changed
+- Nook writes to the system log only with the `debugLog` flag; without it, nothing.
+- Inside: the controller is split by job, the menu bar is read by one background thread, every timer has one owner.
+
 ## [0.4.8] - 2026-10-25
 
 ### Changed
