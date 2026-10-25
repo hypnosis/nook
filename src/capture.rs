@@ -77,8 +77,9 @@ pub fn icon_layout() -> Vec<IconWindow> {
 /// Список окон ScreenCaptureKit с прошлых снимков.
 static CONTENT: Mutex<Option<SharedContent>> = Mutex::new(None);
 
-/// Список окон ScreenCaptureKit: неизменяемый снимок, его можно передавать между потоками.
+/// Список окон ScreenCaptureKit между снимками.
 struct SharedContent(Retained<SCShareableContent>);
+// SAFETY: SCShareableContent — неизменяемый снимок, его можно передавать между потоками.
 unsafe impl Send for SharedContent {}
 
 /// Прошлый список окон, если в нём есть все окна `windows`.
@@ -104,6 +105,7 @@ fn capture(windows: Vec<IconWindow>, receiver: Receiver) {
 
     let handler = RcBlock::new(
         move |content: *mut SCShareableContent, error: *mut NSError| {
+            // SAFETY: ScreenCaptureKit отдаёт живой объект или null; retain берёт свою ссылку.
             let Some(content) = (unsafe { Retained::retain(content) }) else {
                 log_error("SCShareableContent", error);
                 deliver(Vec::new(), receiver);
@@ -152,6 +154,7 @@ fn capture_windows(content: &SCShareableContent, windows: &[IconWindow], receive
         let results = Arc::clone(&results);
         let (id, width, height) = (icon.id, icon.width, icon.height);
         let handler = RcBlock::new(move |image: *mut CGImage, error: *mut NSError| {
+            // SAFETY: ScreenCaptureKit отдаёт снимок, живой на время обработчика, или null; retain берёт свою ссылку.
             let shot = std::ptr::NonNull::new(image).map(|image| Shot {
                 id,
                 image: unsafe { CFRetained::retain(image) },
@@ -288,6 +291,7 @@ pub fn screen_rect(rect: CGRect, hidden: &[u32]) -> Option<CFRetained<CGImage>> 
     let hidden = hidden.to_vec();
     let (sender, receiver) = mpsc::channel();
     let handler = RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
+        // SAFETY: ScreenCaptureKit отдаёт живой объект или null; retain берёт свою ссылку.
         let Some(content) = (unsafe { Retained::retain(content) }) else {
             log_error("SCShareableContent", error);
             let _ = sender.send(None);
@@ -319,6 +323,7 @@ pub fn screen_rect(rect: CGRect, hidden: &[u32]) -> Option<CFRetained<CGImage>> 
         }
         let sender = sender.clone();
         let done = RcBlock::new(move |image: *mut CGImage, error: *mut NSError| {
+            // SAFETY: ScreenCaptureKit отдаёт снимок, живой на время обработчика, или null; retain берёт свою ссылку.
             let image = std::ptr::NonNull::new(image).map(|image| unsafe { CFRetained::retain(image) });
             if image.is_none() {
                 log_error("снимок участка", error);
@@ -363,12 +368,13 @@ pub fn window_rect(id: u32) -> Option<(f64, f64, f64, f64)> {
         .and_then(|info| bounds(&info))
 }
 
-/// CFArray из CGWindowListCopyWindowInfo бесшовно приводится к NSArray<NSDictionary>.
+/// Сведения об окнах из CGWindowListCopyWindowInfo.
 fn window_list(
     option: CGWindowListOption,
     id: u32,
 ) -> Option<Retained<NSArray<NSDictionary<NSString, AnyObject>>>> {
     let list = CGWindowListCopyWindowInfo(option, id)?;
+    // SAFETY: CFArray словарей бесшовно приводится к NSArray<NSDictionary>; `list` держит массив.
     let list: &NSArray<NSDictionary<NSString, AnyObject>> =
         unsafe { &*(CFRetained::as_ptr(&list).as_ptr() as *const _) };
     Some(list.retain())
@@ -403,6 +409,7 @@ pub fn control_center_pid() -> Option<i32> {
 }
 
 fn log_error(what: &str, error: *mut NSError) {
+    // SAFETY: ScreenCaptureKit отдаёт живую ошибку или null.
     let text = unsafe { error.as_ref() }
         .map(|e| e.localizedDescription().to_string())
         .unwrap_or_else(|| "без описания".into());

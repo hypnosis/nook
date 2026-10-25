@@ -188,6 +188,8 @@ fn bar_children(pid: i32, bar: &'static str) -> Vec<CFRetained<AXUIElement>> {
     let Some(children) = children.downcast::<CFArray>().ok() else {
         return Vec::new();
     };
+    // SAFETY: AXChildren — массив AXUIElement, он держит элементы, пока жив; retain берёт свою
+    // ссылку.
     (0..children.count())
         .filter_map(|index| NonNull::new(unsafe { children.value_at_index(index) } as *mut AXUIElement))
         .map(|item| unsafe { CFRetained::retain(item) })
@@ -208,7 +210,7 @@ fn request_accessibility() {
         &[&*NSString::from_str("AXTrustedCheckOptionPrompt")],
         &[&*NSNumber::new_bool(true)],
     );
-    // NSDictionary бесшовно приводится к CFDictionary.
+    // SAFETY: NSDictionary бесшовно приводится к CFDictionary; `options` держит словарь.
     let options: &CFDictionary =
         unsafe { &*(&*options as *const NSDictionary<NSString, NSNumber> as *const CFDictionary) };
     unsafe { AXIsProcessTrustedWithOptions(Some(options)) };
@@ -222,6 +224,7 @@ fn attribute(element: &AXUIElement, name: &'static str) -> Option<CFRetained<CFT
     if error.0 != 0 {
         return None;
     }
+    // SAFETY: AXUIElementCopyAttributeValue отдаёт значение с +1, его забирает CFRetained.
     NonNull::new(value as *mut CFType).map(|value| unsafe { CFRetained::from_raw(value) })
 }
 
@@ -236,6 +239,7 @@ fn frame(item: &AXUIElement) -> Option<(f64, f64)> {
     let size = attribute(item, "AXSize")?.downcast::<AXValue>().ok()?;
     let mut point = CGPoint::new(0.0, 0.0);
     let mut extent = CGSize::new(0.0, 0.0);
+    // SAFETY: тип значения совпадает с типом буфера: CGPoint и CGSize.
     let ok = unsafe {
         position.value(
             AXValueType::CGPoint,

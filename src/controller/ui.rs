@@ -51,6 +51,7 @@ impl Controller {
         }
         // Окно открыли снова на разделе «Расположение» — выбор раздела не меняется.
         if self.layout_shown() {
+            // SAFETY: `onEditorNeedsIcons` — селектор самого контроллера.
             let _: () = unsafe { msg_send![self, onEditorNeedsIcons] };
         }
     }

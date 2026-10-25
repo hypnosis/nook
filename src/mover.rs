@@ -91,8 +91,10 @@ extern "C" {
 /// Разрешает прятать курсор, пока приложение в фоне: без этого `CGDisplayHideCursor`
 /// у агента без активного окна не действует.
 pub fn allow_cursor_hiding_in_background() {
+    // SAFETY: kCFBooleanTrue — постоянная CoreFoundation, её только читают.
     let Some(enabled) = (unsafe { kCFBooleanTrue }) else { return };
     let key = CFString::from_static_str("SetsCursorInBackground");
+    // SAFETY: соединение — своё, ключ и значение — живые CF-объекты.
     let error = unsafe {
         let connection = CGSMainConnectionID();
         CGSSetConnectionProperty(connection, connection, &key, enabled)

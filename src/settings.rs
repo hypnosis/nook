@@ -434,6 +434,7 @@ impl Sidebar {
 fn notify_layout_shown(mtm: MainThreadMarker) {
     if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
         let delegate: &AnyObject = delegate.as_ref();
+        // SAFETY: делегат приложения — `Controller`, он отвечает на этот селектор.
         let _: () = unsafe { msg_send![delegate, onEditorNeedsIcons] };
     }
 }

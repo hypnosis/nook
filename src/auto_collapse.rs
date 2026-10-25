@@ -38,6 +38,7 @@ impl MouseMonitor {
     /// Подписывается на движения мыши. На каждое — зовёт `onMouseMoved:` у target.
     /// `target` (контроллер) живёт всё время работы приложения.
     pub fn start(target: Retained<AnyObject>) -> Self {
+        // SAFETY: `target` — контроллер, он отвечает на `onMouseMoved`.
         let handler = RcBlock::new(move |_event: core::ptr::NonNull<NSEvent>| unsafe {
             let _: () = msg_send![&*target, onMouseMoved];
         });

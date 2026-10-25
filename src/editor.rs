@@ -245,6 +245,7 @@ impl EditorView {
     fn send_to_strip(&self, id: u32) {
         if let Some(delegate) = NSApplication::sharedApplication(self.mtm()).delegate() {
             let delegate: &AnyObject = delegate.as_ref();
+            // SAFETY: делегат приложения — `Controller`, он отвечает на этот селектор.
             let _: () = unsafe { msg_send![delegate, onTileDropped: id] };
         }
     }
