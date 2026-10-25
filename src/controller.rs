@@ -699,12 +699,19 @@ define_class!(
             crate::press::press(sender.tag() as u32);
         }
 
-        /// Таймер коллапса дожил: мышь была вне полоса COLLAPSE_DELAY секунд.
-        /// Сворачиваем, если всё ещё показано.
+        /// Таймер коллапса дожил: мышь была вне полосы `COLLAPSE_DELAY`. Пока открыто меню копии,
+        /// сворачивание откладывается на тот же срок; мышь снова в строке или над панелью — нет.
         #[unsafe(method(onAutoCollapse:))]
         fn on_auto_collapse(&self, _timer: *mut AnyObject) {
             self.ivars().collapse_timer.borrow_mut().take();
-            if self.ivars().hidden.get() || self.ivars().moving.get() || crate::press::menu_open() {
+            if self.ivars().hidden.get() || self.ivars().moving.get() {
+                return;
+            }
+            if crate::press::menu_open() {
+                self.arm_collapse_timer();
+                return;
+            }
+            if auto_collapse::mouse_in_menu_bar_strip(self.mtm()) || self.mouse_in_panel() {
                 return;
             }
             self.toggle();
