@@ -27,7 +27,7 @@ use objc2_app_kit::{
     NSWindowDidBecomeKeyNotification, NSWindowDidMoveNotification, NSWindowWillCloseNotification,
 };
 use objc2_foundation::{
-    NSArray, NSNotification, NSNotificationCenter, NSNumber, NSPoint, NSTimer,
+    NSArray, NSNotification, NSNotificationCenter, NSNumber, NSPoint, NSProcessInfo, NSTimer,
 };
 
 use crate::auto_collapse::{self, MouseMonitor};
@@ -172,9 +172,12 @@ define_class!(
         /// присвоения statusItem.menu (иначе левый клик тоже открывал бы меню).
         #[unsafe(method(onAnchorClick:))]
         fn on_anchor_click(&self, sender: *mut AnyObject) {
-            let event_type = NSApplication::sharedApplication(self.mtm())
-                .currentEvent()
-                .map(|e| e.r#type());
+            let event = NSApplication::sharedApplication(self.mtm()).currentEvent();
+            let event_type = event.as_ref().map(|e| e.r#type());
+            if let Some(event) = &event {
+                let waited = NSProcessInfo::processInfo().systemUptime() - event.timestamp();
+                log::debug!("клик по `<`: ждал главного потока {:.0} мс", waited * 1000.0);
+            }
 
             if event_type == Some(NSEventType::RightMouseUp) {
                 self.show_menu(sender);
@@ -491,6 +494,7 @@ define_class!(
         fn on_collapse_settled(&self) {
             if self.ivars().hidden.get() {
                 self.hide_shroud();
+                log::debug!("шторка: ушла после сворачивания");
             }
         }
 
@@ -677,6 +681,9 @@ define_class!(
         #[unsafe(method(onThemeChanged:))]
         fn on_theme_changed(&self, _notification: &NSNotification) {
             let theme = crate::theme::current();
+            if let Some(shroud) = self.ivars().shroud.borrow_mut().as_mut() {
+                shroud.mark_stale();
+            }
             let target: &AnyObject = self.as_ref();
             if let Some(panel) = self.ivars().panel.borrow_mut().as_mut() {
                 panel.set_theme(self.mtm(), target, theme);
@@ -809,6 +816,7 @@ impl Controller {
             (NARROW_ITEM_WIDTH, ANCHOR_SYMBOL_SHOWN)
         };
 
+        log::debug!("строка: {}", if going_to_hide { "сворачиваю" } else { "раскрываю" });
         if !going_to_hide {
             self.cover_before_expand();
         }
@@ -900,7 +908,7 @@ impl Controller {
         if crate::settings::automatic_layout() || !self.divider_narrow() {
             return;
         }
-        if let Some(shroud) = self.ivars().shroud.borrow().as_ref().filter(|shroud| shroud.rect().is_some()) {
+        if let Some(shroud) = self.ivars().shroud.borrow_mut().as_mut().filter(|shroud| shroud.rect().is_some()) {
             shroud.show_again();
             return;
         }
@@ -942,11 +950,11 @@ impl Controller {
             return false;
         }
         let Some(wanted) = snapshot.divider_length(self.notch_edge()) else { return false };
-        if self.ivars().blocked.get() || crate::bar::nook_order(self.notch_edge()).0 != Order::Ok {
-            return false;
-        }
         let current = self.ivars().divider.borrow().as_ref().map(|divider| divider.length());
         if current.is_none_or(|current| (current - wanted).abs() <= POSITION_TOLERANCE) {
+            return false;
+        }
+        if self.ivars().blocked.get() || crate::bar::nook_order(self.notch_edge()).0 != Order::Ok {
             return false;
         }
         log::info!("разделитель: длина {current:?} → {wanted}");
@@ -976,9 +984,10 @@ impl Controller {
         }
     }
 
-    /// Шторка закрывает нарисованные иконки панели по свежему чтению: полоса и картинка
-    /// пустой строки берутся заново на каждом чтении. Пока открыто меню нажатой иконки, картинка
-    /// не переснимается: подсветку иконки macOS рисует в самой строке. В авторежиме шторки нет.
+    /// Шторка закрывает нарисованные иконки панели по свежему чтению. Картинка пустой строки
+    /// переснимается, только когда сменилась полоса или картинка устарела, и никогда — пока
+    /// открыто меню нажатой иконки: её подсветку macOS рисует в самой строке. В авторежиме
+    /// шторки нет.
     fn follow_shroud(&self, snapshot: &Snapshot, automatic: bool) {
         let strip = if automatic { None } else { snapshot.shroud_strip() };
         if !automatic {
@@ -1004,7 +1013,9 @@ impl Controller {
         }
         let mut shroud = self.ivars().shroud.borrow_mut();
         let shroud = shroud.get_or_insert_with(|| Shroud::new(self.mtm()));
-        crate::shroud::shoot_later(left, right, shroud.window_id(), self.ivars().epoch.get());
+        if shroud.needs_shot(left, right) {
+            crate::shroud::shoot_later(left, right, shroud.window_id(), self.ivars().epoch.get());
+        }
     }
 
     /// Разделитель в строке есть только в ручном режиме. Невидимый, он не занимает места,
