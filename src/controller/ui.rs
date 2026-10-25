@@ -6,7 +6,7 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSControlStateValueOn, NSEventType, NSSwitch, NSWindow,
     NSWindowDidBecomeKeyNotification, NSWindowWillCloseNotification,
 };
-use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint, NSProcessInfo};
+use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint};
 
 use super::Controller;
 use crate::settings::Settings;
@@ -19,10 +19,6 @@ impl Controller {
     pub(super) fn anchor_clicked(&self, sender: *mut AnyObject) {
         let event = NSApplication::sharedApplication(self.mtm()).currentEvent();
         let event_type = event.as_ref().map(|e| e.r#type());
-        if let Some(event) = &event {
-            let waited = NSProcessInfo::processInfo().systemUptime() - event.timestamp();
-            log::debug!("клик по `<`: ждал главного потока {:.0} мс", waited * 1000.0);
-        }
 
         if event_type == Some(NSEventType::RightMouseUp) {
             self.show_menu(sender);

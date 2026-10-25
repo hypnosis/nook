@@ -37,7 +37,7 @@ Nook — лёгкая нативная утилита для macOS, котора
 
 - `cargo build` — сборка, `cargo test` — автотесты сценариев раскладки, `cargo clippy` — линтер.
 - `scripts/install-local.sh` — собрать, подписать, поставить в `/Applications` и запустить.
-- Подробный лог: `defaults write com.hypnosis.nook debugLog -bool YES`, затем перезапуск;
+- Лог пишется только в режиме отладки: `defaults write com.hypnosis.nook debugLog -bool YES`, затем перезапуск;
   читать `/usr/bin/log show --info --debug --predicate 'subsystem == "com.hypnosis.nook"'`.
 
 ## Где что лежит

@@ -81,20 +81,6 @@ impl Snapshot {
         Some(HIDING_WIDTH_MIN)
     }
 
-    /// Для журнала: сколько нарисованных иконок панели не закрыто полосой `shown` и сколько
-    /// иконок основного ряда macOS не нарисовала.
-    pub fn shroud_report(&self, shown: Option<(f64, f64)>) -> (usize, usize) {
-        let Some(divider) = self.divider.as_ref() else { return (0, 0) };
-        let covered = |slot: &Slot| {
-            shown.is_some_and(|(left, right)| {
-                slot.x >= left - POSITION_TOLERANCE && slot.x + slot.width <= right + POSITION_TOLERANCE
-            })
-        };
-        let outside = self.icons.iter().filter(|slot| slot.onscreen && slot.x < divider.x && !covered(slot)).count();
-        let main_hidden = self.icons.iter().filter(|slot| !slot.onscreen && slot.x > divider.x).count();
-        (outside, main_hidden)
-    }
-
     /// Полоса шторки (левый и правый x): от самой левой нарисованной иконки панели с запасом
     /// на подсветку до основного ряда. Иконок панели в строке не видно, разделитель не нарисован
     /// или меню активного приложения заходит в полосу — `None`.

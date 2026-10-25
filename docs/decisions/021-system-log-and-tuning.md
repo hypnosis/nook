@@ -17,18 +17,18 @@
 
 | Макрос | В журнале | Что пишем | Когда пишется |
 |--------|-----------|-----------|---------------|
-| `warn!` | Error | сбои: нет права, перенос завис, снимок не вышел | всегда |
-| `info!` | Default | ключевые события: перенос, записан порядок, пересоздан айтем | всегда |
+| `warn!` | Error | сбои: нет права, перенос завис, снимок не вышел | только с флагом |
+| `info!` | Default | ключевые события: перенос, записан порядок, пересоздан айтем | только с флагом |
 | `debug!` | Info | подробности: координаты, тайминги, порядок рядов | только с флагом |
 
-Флаг подробностей — ключ `debugLog` в настройках Nook, без пересборки. По умолчанию его нет,
-то есть подробности выключены; включают на время отладки и потом удаляют:
+Флаг отладки — ключ `debugLog` в настройках Nook, без пересборки. По умолчанию его нет, и Nook
+в журнал не пишет ничего; включают на время отладки и потом удаляют:
 
 ```
 defaults write com.hypnosis.nook debugLog -bool YES   # включить, нужен перезапуск Nook
 defaults delete com.hypnosis.nook debugLog            # выключить
-log stream --level info --predicate 'subsystem == "com.hypnosis.nook"'
-log show --last 10m --info --predicate 'subsystem == "com.hypnosis.nook"'
+log stream --level debug --predicate 'subsystem == "com.hypnosis.nook"'
+log show --last 10m --info --debug --predicate 'subsystem == "com.hypnosis.nook"'
 ```
 
 **Настроечные числа — `src/tuning.rs`.** Геометрия строки меню, паузы, таймауты, допуски.

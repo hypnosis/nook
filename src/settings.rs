@@ -68,7 +68,7 @@ pub fn set_automatic_layout(on: bool) {
         .setBool_forKey(on, &NSString::from_str(AUTOMATIC_LAYOUT_KEY));
 }
 
-/// Подробный лог: включается только из Терминала через `defaults write`, в интерфейсе его нет.
+/// Режим отладки с логом: включается только из Терминала через `defaults write`, в интерфейсе его нет.
 pub fn debug_log() -> bool {
     NSUserDefaults::standardUserDefaults().boolForKey(&NSString::from_str(DEBUG_LOG_KEY))
 }

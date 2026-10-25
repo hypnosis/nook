@@ -119,20 +119,6 @@ impl Controller {
     /// шторки нет.
     pub(super) fn follow_shroud(&self, snapshot: &Snapshot, automatic: bool) {
         let strip = if automatic { None } else { snapshot.shroud_strip() };
-        if !automatic {
-            let shown = self
-                .ivars()
-                .shroud
-                .borrow()
-                .as_ref()
-                .filter(|shroud| shroud.is_shown())
-                .and_then(Shroud::rect)
-                .map(|rect| (rect.origin.x, rect.origin.x + rect.size.width));
-            let (outside, main_hidden) = snapshot.shroud_report(shown);
-            log::debug!(
-                "шторка: показана {shown:?}, полоса {strip:?}, иконки панели вне шторки: {outside}, основной ряд не нарисован: {main_hidden}"
-            );
-        }
         let Some((left, right)) = strip else {
             self.hide_shroud();
             return;

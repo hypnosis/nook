@@ -29,7 +29,6 @@ pub fn press(icon_id: u32) {
         return;
     }
     let pid = crate::click::owner_pid(icon_id);
-    let clicked = Instant::now();
     thread::spawn(move || {
         let windows_before = pid.map(crate::capture::onscreen_windows_of).unwrap_or_default();
         crate::click::click_window(icon_id);
@@ -39,14 +38,14 @@ pub fn press(icon_id: u32) {
                 MENU_OPEN.store(false, Ordering::SeqCst);
             }
         };
-        wait_menu_closed(pid, &windows_before, clicked, &mut release);
+        wait_menu_closed(pid, &windows_before, &mut release);
         release();
     });
 }
 
 /// Ждёт, пока у приложения `pid` появится новое окно (меню или поповер) и закроется. Окно
 /// открыто дольше `MENU_MAX_OPEN` — `release` пускает новые нажатия, а окно ждётся дальше.
-fn wait_menu_closed(pid: Option<i32>, windows_before: &[u32], clicked: Instant, release: &mut impl FnMut()) {
+fn wait_menu_closed(pid: Option<i32>, windows_before: &[u32], release: &mut impl FnMut()) {
     let Some(pid) = pid else {
         log::debug!("процесс иконки неизвестен — жду только появления");
         thread::sleep(MENU_APPEAR_TIMEOUT);
@@ -63,7 +62,6 @@ fn wait_menu_closed(pid: Option<i32>, windows_before: &[u32], clicked: Instant, 
         }
         thread::sleep(MENU_POLL);
     };
-    log::debug!("клик → меню {} мс, окно меню {menu}: {:?}", clicked.elapsed().as_millis(), crate::capture::window_rect(menu));
     WINDOWS_OPEN.fetch_add(1, Ordering::SeqCst);
     let close_deadline = Instant::now() + MENU_MAX_OPEN;
     let mut capped = false;
