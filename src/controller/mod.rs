@@ -205,16 +205,6 @@ define_class!(
             self.screens_changed();
         }
 
-        #[unsafe(method(onShroudPicture))]
-        fn on_shroud_picture(&self) {
-            self.place_shroud();
-        }
-
-        #[unsafe(method(onCollapseSettled))]
-        fn on_collapse_settled(&self) {
-            self.shroud_after_collapse();
-        }
-
         #[unsafe(method(onOpenAccessibility:))]
         fn on_open_accessibility(&self, _sender: *mut AnyObject) {
             crate::permissions::open_accessibility_pane();

@@ -7,15 +7,14 @@ use objc2_app_kit::NSWorkspace;
 
 use super::Controller;
 use crate::bar::Snapshot;
-use crate::shroud::Shroud;
+use crate::shroud::{Picture, Shroud};
 use crate::status_bar;
 use crate::tuning::NARROW_ITEM_WIDTH;
 
 impl Controller {
     /// Готова картинка пустой полосы: шторка встаёт на неё, если строка с тех пор не менялась
     /// и нажатая иконка не подсвечена.
-    pub(super) fn place_shroud(&self) {
-        let Some((image, rect, epoch)) = crate::shroud::take_picture() else { return };
+    pub(crate) fn place_shroud(&self, (image, rect, epoch): Picture) {
         if epoch != self.ivars().epoch.get()
             || self.ivars().hidden.get()
             || crate::settings::automatic_layout()
@@ -30,7 +29,7 @@ impl Controller {
     }
 
     /// Строка свернулась и встала: иконки панели ушли за край, шторка больше не нужна.
-    pub(super) fn shroud_after_collapse(&self) {
+    pub(crate) fn shroud_after_collapse(&self) {
         if self.ivars().hidden.get() {
             self.hide_shroud();
             log::debug!("шторка: ушла после сворачивания");

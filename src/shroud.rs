@@ -2,15 +2,12 @@
 //! раскрыта, иконки панели стоят у чёлки под ней: их не видно, и мышь до них не доходит.
 //! Клик по крышке — как по пустой строке меню, Nook при этом не становится активным.
 
-use std::sync::{Mutex, PoisonError};
 use std::thread;
 
-use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2::{msg_send, AnyThread, MainThreadMarker, MainThreadOnly};
+use objc2::{AnyThread, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSColor, NSImage, NSImageView, NSPanel, NSScreen, NSStatusWindowLevel,
+    NSBackingStoreType, NSColor, NSImage, NSImageView, NSPanel, NSScreen, NSStatusWindowLevel,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
@@ -18,9 +15,7 @@ use objc2_core_graphics::CGImage;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 /// Картинка пустой полосы, её место и поколение строки, для которого она снята.
-type Picture = (CFRetained<CGImage>, CGRect, u64);
-
-static PICTURE: Mutex<Option<Picture>> = Mutex::new(None);
+pub type Picture = (CFRetained<CGImage>, CGRect, u64);
 
 pub struct Shroud {
     window: Retained<NSPanel>,
@@ -133,47 +128,21 @@ pub fn shoot_now(left: f64, right: f64, shroud_id: u32) -> Option<(CFRetained<CG
     shoot(left, right, shroud_id)
 }
 
-/// Снимает полосу в фоне и отдаёт картинку делегату через `onShroudPicture`.
+/// Снимает полосу в фоне и отдаёт картинку контроллеру.
 pub fn shoot_later(left: f64, right: f64, shroud_id: u32, epoch: u64) {
     thread::spawn(move || {
         let Some((image, rect)) = shoot(left, right, shroud_id) else {
             log::debug!("шторка: снимка полосы {left}..{right} нет");
             return;
         };
-        *PICTURE.lock().unwrap_or_else(PoisonError::into_inner) = Some((image, rect, epoch));
-        notify(Event::Picture);
+        crate::controller::on_main(move |controller| controller.place_shroud((image, rect, epoch)));
     });
 }
 
-/// Последняя снятая картинка; забирается один раз.
-pub fn take_picture() -> Option<Picture> {
-    PICTURE.lock().unwrap_or_else(PoisonError::into_inner).take()
-}
-
-/// Ждёт, пока строка встанет после сворачивания, и зовёт `onCollapseSettled` у делегата.
+/// Ждёт, пока строка встанет после сворачивания, и сообщает об этом контроллеру.
 pub fn hide_when_still() {
     thread::spawn(|| {
         crate::mover::wait_until_still();
-        notify(Event::CollapseSettled);
-    });
-}
-
-/// О чём шторка сообщает делегату.
-#[derive(Clone, Copy)]
-enum Event {
-    Picture,
-    CollapseSettled,
-}
-
-fn notify(event: Event) {
-    DispatchQueue::main().exec_async(move || {
-        let mtm = MainThreadMarker::new().expect("main queue");
-        if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
-            let delegate: &AnyObject = delegate.as_ref();
-            match event {
-                Event::Picture => unsafe { msg_send![delegate, onShroudPicture] },
-                Event::CollapseSettled => unsafe { msg_send![delegate, onCollapseSettled] },
-            }
-        }
+        crate::controller::on_main(|controller| controller.shroud_after_collapse());
     });
 }
