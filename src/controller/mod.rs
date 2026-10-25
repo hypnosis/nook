@@ -18,20 +18,18 @@ use std::time::{Duration, Instant};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
 use objc2::MainThreadMarker;
-use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly, Message};
+use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly};
 use objc2::sel;
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSApplicationDidChangeScreenParametersNotification, NSButton,
-    NSControlStateValueOn, NSEventType, NSImage, NSScreen, NSStatusItem, NSSwitch, NSWindow,
-    NSWindowDidBecomeKeyNotification, NSWindowDidMoveNotification, NSWindowWillCloseNotification, NSWorkspace,
-    NSWorkspaceDidActivateApplicationNotification,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSButton, NSControlStateValueOn, NSEventType,
+    NSImage, NSScreen, NSStatusItem, NSSwitch, NSWindow, NSWindowDidBecomeKeyNotification,
+    NSWindowWillCloseNotification,
 };
 use objc2_foundation::{
     NSArray, NSNotification, NSNotificationCenter, NSNumber, NSPoint, NSProcessInfo,
 };
 
-use crate::auto_collapse::{self, MouseMonitor};
+use crate::auto_collapse::MouseMonitor;
 use crate::bar::{Order, Snapshot};
 use crate::layout::{Change, Layout};
 use crate::onboarding::Onboarding;
@@ -39,22 +37,16 @@ use crate::panel::Panel;
 use crate::settings::Settings;
 use crate::shroud::Shroud;
 use crate::timer::Timer;
-use crate::status_bar::{
-    self, StatusItems, ANCHOR_SYMBOL_BLOCKED, ANCHOR_SYMBOL_HIDDEN, ANCHOR_SYMBOL_SHOWN,
-};
+use crate::status_bar::StatusItems;
 use crate::strings::{self, Lang};
 use crate::tuning::{
-    ANCHOR_MAX_RETRIES, COLLAPSE_DELAY, DIVIDER_SETTLE_DELAY, HIDDEN_WIDTH_MARGIN, HIDDEN_WIDTH_MAX, HIDING_WIDTH_MIN,
-    MOVE_WATCHDOG, MOVE_WATCHDOG_POLL, NARROW_ITEM_WIDTH,
-    PANEL_REFRESH_INTERVAL, PLACEMENT_CHECK_INTERVAL,
-    PLACEMENT_ESCALATE_AFTER, PLACEMENT_MAX_ATTEMPTS, POSITION_TOLERANCE, SCREEN_WIDTH_FALLBACK,
+    ANCHOR_MAX_RETRIES, DIVIDER_SETTLE_DELAY, MOVE_WATCHDOG, MOVE_WATCHDOG_POLL, NARROW_ITEM_WIDTH, POSITION_TOLERANCE,
 };
 
+mod collapse;
 mod shroud;
+mod startup;
 mod watchdog;
-
-/// x айтема, которого macOS ещё не разместила в строке.
-const UNPLACED_X: f64 = 0.0;
 
 /// Внутреннее состояние.
 /// - `items` появляются после запуска. `hidden`: текущий режим.
@@ -126,52 +118,7 @@ define_class!(
     unsafe impl NSApplicationDelegate for Controller {
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn did_finish_launching(&self, _notification: &NSNotification) {
-
-            let mtm = self.mtm();
-            let target: &AnyObject = self.as_ref();
-            let items = unsafe { status_bar::create(mtm, target, self.ivars().lang) };
-
-            *self.ivars().items.borrow_mut() = Some(items);
-            self.ivars().hidden.set(false);
-
-            // ОСНОВНОЙ триггер: подписка на NSWindowDidMoveNotification.
-            // Система постит её, когда айтем получает реальную координату (x:0→1700).
-            // Ловим точное СОБЫТИЕ размещения вместо гадания по таймеру.
-            let target: &AnyObject = self.as_ref();
-            unsafe {
-                NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
-                    target,
-                    sel!(onWindowMoved:),
-                    Some(NSWindowDidMoveNotification),
-                    None,
-                );
-            }
-            crate::theme::observe(target);
-            unsafe {
-                NSWorkspace::sharedWorkspace().notificationCenter().addObserver_selector_name_object(
-                    target,
-                    sel!(onAppActivated:),
-                    Some(NSWorkspaceDidActivateApplicationNotification),
-                    None,
-                );
-            }
-            unsafe {
-                NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
-                    target,
-                    sel!(onScreensChanged:),
-                    Some(NSApplicationDidChangeScreenParametersNotification),
-                    None,
-                );
-            }
-
-            // Запасная проверка: элемент, застрявший на x=0 без события, пересоздаётся.
-            // Размещение асинхронно: синхронное ожидание его ломает.
-            let target: &AnyObject = self.as_ref();
-            *self.ivars().placement_timer.borrow_mut() =
-                Some(Timer::repeating(target, PLACEMENT_CHECK_INTERVAL, sel!(onPlacementCheck:)));
-            let main_menu = unsafe { crate::menu::main_menu(mtm, target, self.ivars().lang) };
-            NSApplication::sharedApplication(mtm).setMainMenu(Some(&main_menu));
-            self.show_onboarding_if_needed();
+            self.launch();
         }
     }
 
@@ -382,16 +329,9 @@ define_class!(
             self.arm_move_watchdog();
         }
 
-        /// Стартовый разделитель встал — читаем строку: чтение задаст длину разделителя и снимет
-        /// иконки панели. Если macOS забыла место разделителя, сначала восстанавливаем раскладку.
         #[unsafe(method(onDividerPlaced:))]
         fn on_divider_placed(&self, _timer: *mut AnyObject) {
-            self.ivars().starting.set(true);
-            if self.ivars().restore_on_start.get() {
-                self.start_restore();
-            } else {
-                self.request_read();
-            }
+            self.divider_placed();
         }
 
         /// Раскладка восстановлена — строка читается заново, разделитель получит нужную длину.
@@ -512,89 +452,14 @@ define_class!(
             self.finish_placement_if_ready();
         }
 
-        /// Проверка размещения айтемов (периодическая, после старта).
-        /// Если айтем застрял на x=0 — пересоздаёт его (до лимита попыток).
-        /// Когда ОБА размещены — запускает стартовое авто-скрытие и останавливается.
-        /// Так первый toggle гарантированно идёт по валидным координатам.
         #[unsafe(method(onPlacementCheck:))]
         fn on_placement_check(&self, _timer: *mut AnyObject) {
-            let mtm = self.mtm();
-            let (sx, ax) = {
-                let items_ref = self.ivars().items.borrow();
-                let Some(items) = items_ref.as_ref() else { return };
-                (
-                    status_bar::item_origin_x(&items.spacer, mtm),
-                    status_bar::item_origin_x(&items.anchor, mtm),
-                )
-            };
-
-            let lang = self.ivars().lang;
-            let target: &AnyObject = self.as_ref();
-            let both_ok = is_placed(sx) && is_placed(ax);
-
-            // Оба размещены → общий финиш (событие могло уже его сделать) + стоп таймера.
-            if both_ok {
-                self.ivars().placement_timer.borrow_mut().take();
-                self.finish_placement_if_ready();
-                return;
-            }
-
-            // Не размещены. Считаем попытки; защита от вечного таймера.
-            let attempts = self.ivars().placement_attempts.get() + 1;
-            self.ivars().placement_attempts.set(attempts);
-            if attempts >= PLACEMENT_MAX_ATTEMPTS {
-                self.ivars().placement_timer.borrow_mut().take();
-                log::warn!("placement: лимит попыток исчерпан — сдаюсь (guard защитит)");
-                return;
-            }
-
-            // Эскалация: после нескольких безуспешных попыток одиночное пересоздание
-            // не помогает (новый айтем садится на тот же x=0) → пересоздать ОБА.
-            if attempts.is_multiple_of(PLACEMENT_ESCALATE_AFTER) {
-                let mut items_ref = self.ivars().items.borrow_mut();
-                if let Some(items) = items_ref.as_mut() {
-                    unsafe { status_bar::recreate_both(items, mtm, target, lang) };
-                }
-                return;
-            }
-
-            // Обычный retry: пересоздать конкретный застрявший айтем.
-            if sx == Some(UNPLACED_X) && self.ivars().spacer_retries.get() > 0 {
-                self.ivars()
-                    .spacer_retries
-                    .set(self.ivars().spacer_retries.get() - 1);
-                let mut items_ref = self.ivars().items.borrow_mut();
-                if let Some(items) = items_ref.as_mut() {
-                    unsafe { status_bar::recreate_spacer(items, mtm, lang) };
-                }
-                return;
-            }
-            if ax == Some(UNPLACED_X) && self.ivars().anchor_retries.get() > 0 {
-                self.ivars()
-                    .anchor_retries
-                    .set(self.ivars().anchor_retries.get() - 1);
-                let mut items_ref = self.ivars().items.borrow_mut();
-                if let Some(items) = items_ref.as_mut() {
-                    unsafe { status_bar::recreate_anchor(items, mtm, target, lang) };
-                }
-            }
+            self.check_placement();
         }
 
-        /// Движение мыши (от монитора). Работает только когда иконки показаны.
-        /// Мышь в полосе menu bar или над панелью → гасим таймер коллапса.
-        /// Мышь ушла → взводим.
         #[unsafe(method(onMouseMoved))]
         fn on_mouse_moved(&self) {
-            if self.ivars().hidden.get() {
-                return; // показывать нечего — следить незачем
-            }
-            let in_strip = auto_collapse::mouse_in_menu_bar_strip(self.mtm());
-            let in_panel = self.mouse_in_panel();
-            if in_strip || in_panel {
-                self.cancel_collapse_timer();
-            } else if self.ivars().collapse_timer.borrow().is_none() {
-                self.arm_collapse_timer();
-            }
+            self.mouse_moved();
         }
 
         /// Снимки иконок панели готовы. На старте после них строка сворачивается.
@@ -637,22 +502,9 @@ define_class!(
             crate::press::press(sender.tag() as u32);
         }
 
-        /// Таймер коллапса дожил: мышь была вне полосы `COLLAPSE_DELAY`. Пока открыто меню копии,
-        /// сворачивание откладывается на тот же срок; мышь снова в строке или над панелью — нет.
         #[unsafe(method(onAutoCollapse:))]
         fn on_auto_collapse(&self, _timer: *mut AnyObject) {
-            self.ivars().collapse_timer.borrow_mut().take();
-            if self.ivars().hidden.get() || self.ivars().moving.get() {
-                return;
-            }
-            if crate::press::menu_open() {
-                self.arm_collapse_timer();
-                return;
-            }
-            if auto_collapse::mouse_in_menu_bar_strip(self.mtm()) || self.mouse_in_panel() {
-                return;
-            }
-            self.toggle();
+            self.auto_collapse();
         }
     }
 );
@@ -693,19 +545,6 @@ impl Controller {
         unsafe { msg_send![super(this), init] }
     }
 
-    /// Показывает окно разрешений, если какого-то разрешения нет.
-    fn show_onboarding_if_needed(&self) {
-        if crate::permissions::all_granted() {
-            return;
-        }
-        let target: &AnyObject = self.as_ref();
-        let onboarding = Onboarding::new(self.mtm(), target, self.ivars().lang);
-        self.observe_window(onboarding.window());
-        self.set_in_dock(true);
-        onboarding.show(self.mtm());
-        *self.ivars().onboarding.borrow_mut() = Some(onboarding);
-    }
-
     /// Окно настроек или разрешений сообщает контроллеру, что стало активным и что закрывается.
     fn observe_window(&self, window: &NSWindow) {
         let target: &AnyObject = self.as_ref();
@@ -735,87 +574,6 @@ impl Controller {
             NSApplicationActivationPolicy::Accessory
         };
         NSApplication::sharedApplication(self.mtm()).setActivationPolicy(policy);
-    }
-
-    /// Переключает видимость зоны слева от якоря — с проверкой порядка.
-    fn toggle(&self) {
-        let items_ref = self.ivars().items.borrow();
-        let Some(items) = items_ref.as_ref() else {
-            log::debug!("toggle: айтемы ещё не созданы — игнор");
-            return;
-        };
-
-        let going_to_hide = !self.ivars().hidden.get();
-
-        // Прячем только при целом порядке. `<` спрятан macOS или ещё не размещён — ждём.
-        if going_to_hide {
-            let (order, coords) = crate::bar::nook_order(self.notch_edge());
-            if matches!(order, Order::Hidden | Order::Unknown) {
-                log::debug!("строка: не сворачиваю, {order:?} — {coords}");
-                return;
-            }
-            if order != Order::Ok || self.ivars().blocked.get() {
-                self.show_blocked(order, &coords);
-                return;
-            }
-        }
-
-        self.ivars().hidden.set(going_to_hide);
-        let (spacer_width, anchor_symbol) = if going_to_hide {
-            (self.hidden_width(), ANCHOR_SYMBOL_HIDDEN)
-        } else {
-            (NARROW_ITEM_WIDTH, ANCHOR_SYMBOL_SHOWN)
-        };
-
-        log::debug!("строка: {}", if going_to_hide { "сворачиваю" } else { "раскрываю" });
-        if !going_to_hide {
-            self.cover_before_expand();
-        }
-        items.spacer.setLength(spacer_width);
-        status_bar::set_anchor_symbol(items, self.mtm(), anchor_symbol);
-        self.bump_epoch();
-        if going_to_hide {
-            self.uncover_after_collapse();
-        }
-
-        // Смена состояния гасит взведённый таймер коллапса.
-        self.cancel_collapse_timer();
-        // Показали → следим за мышью (для автосворачивания). Скрыли → перестаём.
-        if going_to_hide {
-            self.stop_mouse_watch();
-        } else {
-            self.start_mouse_watch();
-        }
-        self.sync_panel(items, going_to_hide);
-    }
-
-    /// Панель открыта ровно тогда, когда иконки раскрыты; пока они раскрыты, строка
-    /// читается по таймеру.
-    fn sync_panel(&self, items: &StatusItems, hidden: bool) {
-        self.watch_order(!hidden && self.ivars().placement_done.get());
-        if hidden {
-            self.ivars().bar_timer.borrow_mut().take();
-        } else {
-            self.request_read();
-            let target: &AnyObject = self.as_ref();
-            let mut timer = self.ivars().bar_timer.borrow_mut();
-            if timer.is_none() {
-                *timer = Some(Timer::repeating(target, PANEL_REFRESH_INTERVAL, sel!(onBarTick:)));
-            }
-        }
-        let mut panel = self.ivars().panel.borrow_mut();
-        if hidden || !crate::settings::show_panel() {
-            if let Some(panel) = panel.as_mut() {
-                panel.hide();
-            }
-            return;
-        }
-        let Some(anchor_window) = items.anchor.button(self.mtm()).and_then(|b| b.window()) else {
-            return;
-        };
-        panel
-            .get_or_insert_with(|| Panel::new(self.mtm()))
-            .show_below(&anchor_window);
     }
 
     /// Nook сам меняет строку: чтения, начатые раньше, не принимаются.
@@ -903,25 +661,6 @@ impl Controller {
         }
     }
 
-    /// Старт закончен: иконки панели сняты — строка сворачивается.
-    fn finish_startup(&self) {
-        if self.ivars().starting.replace(false) && !self.ivars().hidden.get() {
-            self.toggle();
-        }
-    }
-
-    /// На старте разделитель так и не прочитался — сворачиваемся без снимков.
-    fn finish_startup_if_stuck(&self) {
-        if self.ivars().starting.get() {
-            log::warn!("старт: разделитель не прочитан — сворачиваю без снимков панели");
-            self.finish_startup();
-        }
-    }
-
-    fn mouse_in_panel(&self) -> bool {
-        self.ivars().panel.borrow().as_ref().is_some_and(Panel::contains_mouse)
-    }
-
     fn layout_shown(&self) -> bool {
         self.ivars().settings.borrow().as_ref().is_some_and(Settings::is_layout_shown)
     }
@@ -930,49 +669,6 @@ impl Controller {
     fn editor_busy(&self) -> bool {
         let dragging = self.ivars().settings.borrow().as_ref().is_some_and(|settings| settings.editor.is_dragging());
         dragging || self.ivars().moving.get()
-    }
-
-    /// Завершает стартовую настройку, КОГДА оба айтема размещены (x>0).
-    /// Вызывается и из события NSWindowDidMove (основной триггер), и из
-    /// fallback-таймера. Идемпотентно: срабатывает один раз (флаг placement_done),
-    /// отписывается от нотификации и создаёт разделитель панели.
-    fn finish_placement_if_ready(&self) {
-        if self.ivars().placement_done.get() {
-            return;
-        }
-        let mtm = self.mtm();
-        let (sx, ax) = {
-            let items_ref = self.ivars().items.borrow();
-            let Some(items) = items_ref.as_ref() else { return };
-            (
-                status_bar::item_origin_x(&items.spacer, mtm),
-                status_bar::item_origin_x(&items.anchor, mtm),
-            )
-        };
-        let both_ok = is_placed(sx) && is_placed(ax);
-        if !both_ok {
-            return;
-        }
-
-        self.ivars().placement_done.set(true);
-        self.watch_order(!self.ivars().hidden.get());
-        // Отписываемся от событий перемещения — стартовая настройка завершена.
-        let observer: &AnyObject = self.as_ref();
-        unsafe {
-            NSNotificationCenter::defaultCenter().removeObserver_name_object(
-                observer,
-                Some(NSWindowDidMoveNotification),
-                None,
-            );
-        }
-        if self.ivars().hidden.get() {
-            return;
-        }
-        let automatic = crate::settings::automatic_layout();
-        self.ivars().restore_on_start.set(!automatic && !crate::divider::has_saved_place());
-        *self.ivars().divider.borrow_mut() = Some(crate::divider::create(self.mtm()));
-        self.show_divider(!automatic);
-        crate::timer::after(self.as_ref(), DIVIDER_SETTLE_DELAY, sel!(onDividerPlaced:));
     }
 
     /// Возвращает мышь, если она забрана; повторный вызов ничего не делает.
@@ -1054,34 +750,6 @@ impl Controller {
         *self.ivars().move_watchdog.borrow_mut() = Some(timer);
     }
 
-    /// Запускает монитор мыши, если ещё не запущен.
-    fn start_mouse_watch(&self) {
-        if self.ivars().monitor.borrow().is_some() {
-            return;
-        }
-        let target: Retained<AnyObject> = self.retain().into_super().into();
-        *self.ivars().monitor.borrow_mut() = Some(MouseMonitor::start(target));
-    }
-
-    /// Останавливает монитор мыши.
-    fn stop_mouse_watch(&self) {
-        if let Some(mut monitor) = self.ivars().monitor.borrow_mut().take() {
-            monitor.stop();
-        }
-    }
-
-    /// Гасит взведённый таймер коллапса, если он есть.
-    fn cancel_collapse_timer(&self) {
-        self.ivars().collapse_timer.borrow_mut().take();
-    }
-
-    /// Взводит таймер коллапса (мышь ушла из полосы). Через COLLAPSE_DELAY
-    /// сработает onAutoCollapse: и свернёт, если мышь не вернулась.
-    fn arm_collapse_timer(&self) {
-        let timer = Timer::once(self.as_ref(), COLLAPSE_DELAY, sel!(onAutoCollapse:));
-        *self.ivars().collapse_timer.borrow_mut() = Some(timer);
-    }
-
     /// Показывает контекстное меню у кнопки якоря (правый клик).
     /// Меню строится здесь и показывается вручную — НЕ через statusItem.menu,
     /// чтобы не перехватывать левый клик.
@@ -1104,36 +772,4 @@ impl Controller {
         let origin = NSPoint::new(0.0, 0.0);
         menu.popUpMenuPositioningItem_atLocation_inView(None, origin, Some(&button));
     }
-
-    /// Показывает знак блокировки на якоре и оставляет всё как есть.
-    /// Порядок нарушен: спейсер и разделитель узкие, иконки раскрыты, на якоре ⚠.
-    fn show_blocked(&self, order: Order, coords: &str) {
-        if self.ivars().hidden.get() {
-            self.toggle();
-        }
-        let items_ref = self.ivars().items.borrow();
-        let Some(items) = items_ref.as_ref() else { return };
-        items.spacer.setLength(NARROW_ITEM_WIDTH);
-        if let Some(divider) = self.ivars().divider.borrow().as_ref() {
-            divider.setLength(NARROW_ITEM_WIDTH);
-        }
-        status_bar::set_anchor_symbol(items, self.mtm(), ANCHOR_SYMBOL_BLOCKED);
-        if !self.ivars().blocked.replace(true) {
-            self.bump_epoch();
-            log::error!("СТОП: {order:?} — скрытие заблокировано, показываю ⚠ ({coords})");
-        }
-    }
-
-    /// Ширина спейсера в скрытом состоянии: ширина экрана + запас, ограниченная.
-    fn hidden_width(&self) -> f64 {
-        let screen_width = NSScreen::mainScreen(self.mtm())
-            .map(|screen| screen.frame().size.width)
-            .unwrap_or(SCREEN_WIDTH_FALLBACK);
-        (screen_width + HIDDEN_WIDTH_MARGIN).clamp(HIDING_WIDTH_MIN, HIDDEN_WIDTH_MAX)
-    }
-}
-
-/// Айтем стоит в строке: его x известен и это не место неразмещённого.
-fn is_placed(x: Option<f64>) -> bool {
-    x.is_some_and(|x| x != UNPLACED_X)
 }
