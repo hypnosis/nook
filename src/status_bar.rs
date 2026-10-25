@@ -49,6 +49,7 @@ pub const ANCHOR_SYMBOL_HIDDEN: &str = "chevron.down";
 pub const ANCHOR_SYMBOL_BLOCKED: &str = "exclamationmark.triangle";
 
 /// Пара айтемов. Контроллер держит оба `Retained`, пока жив.
+#[derive(Clone)]
 pub struct StatusItems {
     pub anchor: Retained<NSStatusItem>,
     pub spacer: Retained<NSStatusItem>,

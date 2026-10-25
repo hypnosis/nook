@@ -97,7 +97,7 @@ impl Controller {
 
     /// Разделитель панели сейчас узкий.
     fn divider_narrow(&self) -> bool {
-        self.ivars().divider.borrow().as_ref().is_some_and(|divider| divider.length() <= NARROW_ITEM_WIDTH)
+        self.divider().is_some_and(|divider| divider.length() <= NARROW_ITEM_WIDTH)
     }
 
     /// Шторка уходит, когда свёрнутая строка встанет.

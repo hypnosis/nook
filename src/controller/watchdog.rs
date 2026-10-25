@@ -29,9 +29,9 @@ impl Controller {
             Order::Ok => {
                 self.ivars().bad_reads.set(0);
                 if self.ivars().blocked.replace(false) {
-                    if let Some(items) = self.ivars().items.borrow().as_ref() {
+                    if let Some(items) = self.items() {
                         let symbol = if self.ivars().hidden.get() { ANCHOR_SYMBOL_HIDDEN } else { ANCHOR_SYMBOL_SHOWN };
-                        status_bar::set_anchor_symbol(items, self.mtm(), symbol);
+                        status_bar::set_anchor_symbol(&items, self.mtm(), symbol);
                     }
                     log::info!("сторож: порядок восстановлен — {coords}");
                     self.request_read();

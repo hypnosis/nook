@@ -10,7 +10,7 @@ use objc2_foundation::NSNotificationCenter;
 
 use super::Controller;
 use crate::onboarding::Onboarding;
-use crate::status_bar::{self, UNPLACED_X};
+use crate::status_bar::{self, StatusItems, UNPLACED_X};
 use crate::timer::Timer;
 use crate::tuning::{DIVIDER_SETTLE_DELAY, PLACEMENT_CHECK_INTERVAL, PLACEMENT_ESCALATE_AFTER, PLACEMENT_MAX_ATTEMPTS};
 
@@ -81,14 +81,8 @@ impl Controller {
     /// Так первый toggle гарантированно идёт по валидным координатам.
     pub(super) fn check_placement(&self) {
         let mtm = self.mtm();
-        let (sx, ax) = {
-            let items_ref = self.ivars().items.borrow();
-            let Some(items) = items_ref.as_ref() else { return };
-            (
-                status_bar::item_origin_x(&items.spacer, mtm),
-                status_bar::item_origin_x(&items.anchor, mtm),
-            )
-        };
+        let Some(items) = self.items() else { return };
+        let (sx, ax) = (status_bar::item_origin_x(&items.spacer, mtm), status_bar::item_origin_x(&items.anchor, mtm));
 
         let lang = self.ivars().lang;
         let target: &AnyObject = self.as_ref();
@@ -113,10 +107,7 @@ impl Controller {
         // Эскалация: после нескольких безуспешных попыток одиночное пересоздание
         // не помогает (новый айтем садится на тот же x=0) → пересоздать ОБА.
         if attempts.is_multiple_of(PLACEMENT_ESCALATE_AFTER) {
-            let mut items_ref = self.ivars().items.borrow_mut();
-            if let Some(items) = items_ref.as_mut() {
-                unsafe { status_bar::recreate_both(items, mtm, target, lang) };
-            }
+            self.recreate_items(|items| unsafe { status_bar::recreate_both(items, mtm, target, lang) });
             return;
         }
 
@@ -125,21 +116,23 @@ impl Controller {
             self.ivars()
                 .spacer_retries
                 .set(self.ivars().spacer_retries.get() - 1);
-            let mut items_ref = self.ivars().items.borrow_mut();
-            if let Some(items) = items_ref.as_mut() {
-                unsafe { status_bar::recreate_spacer(items, mtm, lang) };
-            }
+            self.recreate_items(|items| unsafe { status_bar::recreate_spacer(items, mtm, lang) });
             return;
         }
         if ax == Some(UNPLACED_X) && self.ivars().anchor_retries.get() > 0 {
             self.ivars()
                 .anchor_retries
                 .set(self.ivars().anchor_retries.get() - 1);
-            let mut items_ref = self.ivars().items.borrow_mut();
-            if let Some(items) = items_ref.as_mut() {
-                unsafe { status_bar::recreate_anchor(items, mtm, target, lang) };
-            }
+            self.recreate_items(|items| unsafe { status_bar::recreate_anchor(items, mtm, target, lang) });
         }
+    }
+
+    /// Пересоздаёт элементы Nook вне заёма: удаление и создание элементов шлют уведомления
+    /// синхронно, а их обработчики читают элементы.
+    fn recreate_items(&self, recreate: impl FnOnce(&mut StatusItems)) {
+        let Some(mut items) = self.ivars().items.borrow_mut().take() else { return };
+        recreate(&mut items);
+        *self.ivars().items.borrow_mut() = Some(items);
     }
 
     /// Показывает окно разрешений, если какого-то разрешения нет.
@@ -179,14 +172,8 @@ impl Controller {
             return;
         }
         let mtm = self.mtm();
-        let (sx, ax) = {
-            let items_ref = self.ivars().items.borrow();
-            let Some(items) = items_ref.as_ref() else { return };
-            (
-                status_bar::item_origin_x(&items.spacer, mtm),
-                status_bar::item_origin_x(&items.anchor, mtm),
-            )
-        };
+        let Some(items) = self.items() else { return };
+        let (sx, ax) = (status_bar::item_origin_x(&items.spacer, mtm), status_bar::item_origin_x(&items.anchor, mtm));
         let both_ok = is_placed(sx) && is_placed(ax);
         if !both_ok {
             return;

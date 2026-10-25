@@ -52,8 +52,7 @@ impl Controller {
 
     /// Переключает видимость зоны слева от якоря — с проверкой порядка.
     pub(super) fn toggle(&self) {
-        let items_ref = self.ivars().items.borrow();
-        let Some(items) = items_ref.as_ref() else {
+        let Some(items) = self.items() else {
             log::debug!("toggle: айтемы ещё не созданы — игнор");
             return;
         };
@@ -85,7 +84,7 @@ impl Controller {
             self.cover_before_expand();
         }
         items.spacer.setLength(spacer_width);
-        status_bar::set_anchor_symbol(items, self.mtm(), anchor_symbol);
+        status_bar::set_anchor_symbol(&items, self.mtm(), anchor_symbol);
         self.bump_epoch();
         if going_to_hide {
             self.uncover_after_collapse();
@@ -99,7 +98,7 @@ impl Controller {
         } else {
             self.start_mouse_watch();
         }
-        self.sync_panel(items, going_to_hide);
+        self.sync_panel(&items, going_to_hide);
     }
 
     /// Панель открыта ровно тогда, когда иконки раскрыты; пока они раскрыты, строка
@@ -165,13 +164,12 @@ impl Controller {
         if self.ivars().hidden.get() {
             self.toggle();
         }
-        let items_ref = self.ivars().items.borrow();
-        let Some(items) = items_ref.as_ref() else { return };
+        let Some(items) = self.items() else { return };
         items.spacer.setLength(NARROW_ITEM_WIDTH);
-        if let Some(divider) = self.ivars().divider.borrow().as_ref() {
+        if let Some(divider) = self.divider() {
             divider.setLength(NARROW_ITEM_WIDTH);
         }
-        status_bar::set_anchor_symbol(items, self.mtm(), ANCHOR_SYMBOL_BLOCKED);
+        status_bar::set_anchor_symbol(&items, self.mtm(), ANCHOR_SYMBOL_BLOCKED);
         if !self.ivars().blocked.replace(true) {
             self.bump_epoch();
             log::error!("СТОП: {order:?} — скрытие заблокировано, показываю ⚠ ({coords})");

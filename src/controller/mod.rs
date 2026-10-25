@@ -300,6 +300,17 @@ impl Controller {
         unsafe { msg_send![super(this), init] }
     }
 
+    /// Элементы Nook в строке. Копия: заём отпущен до вызовов AppKit, которые шлют уведомления
+    /// синхронно.
+    fn items(&self) -> Option<StatusItems> {
+        self.ivars().items.borrow().clone()
+    }
+
+    /// Разделитель панели. Копия: заём отпущен до вызовов AppKit.
+    fn divider(&self) -> Option<Retained<NSStatusItem>> {
+        self.ivars().divider.borrow().clone()
+    }
+
     /// Правый край чёлки основного экрана, где живут иконки строки; без чёлки — `None`.
     fn notch_edge(&self) -> Option<f64> {
         let screens = NSScreen::screens(self.mtm());

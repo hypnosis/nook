@@ -128,7 +128,7 @@ impl Controller {
             return false;
         }
         let Some(wanted) = snapshot.divider_length(self.notch_edge()) else { return false };
-        let current = self.ivars().divider.borrow().as_ref().map(|divider| divider.length());
+        let current = self.divider().map(|divider| divider.length());
         if current.is_none_or(|current| (current - wanted).abs() <= POSITION_TOLERANCE) {
             return false;
         }
@@ -145,7 +145,7 @@ impl Controller {
                 self.cover_now(right);
             }
         }
-        if let Some(divider) = self.ivars().divider.borrow().as_ref() {
+        if let Some(divider) = self.divider() {
             divider.setLength(wanted);
         }
         self.bump_epoch();
@@ -156,7 +156,7 @@ impl Controller {
     /// Разделитель в строке есть только в ручном режиме. Невидимый, он не занимает места,
     /// а macOS помнит, где он стоял.
     pub(super) fn show_divider(&self, visible: bool) {
-        if let Some(divider) = self.ivars().divider.borrow().as_ref() {
+        if let Some(divider) = self.divider() {
             divider.setVisible(visible);
             log::info!("разделитель: {}", if visible { "в строке" } else { "убран из строки" });
         }

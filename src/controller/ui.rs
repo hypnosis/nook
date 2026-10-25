@@ -92,8 +92,8 @@ impl Controller {
         if let Some(settings) = self.ivars().settings.borrow().as_ref() {
             settings.refresh();
         }
-        if let Some(items) = self.ivars().items.borrow().as_ref() {
-            self.sync_panel(items, self.ivars().hidden.get());
+        if let Some(items) = self.items() {
+            self.sync_panel(&items, self.ivars().hidden.get());
         }
     }
 
@@ -177,8 +177,7 @@ impl Controller {
     /// Меню строится здесь и показывается вручную — НЕ через statusItem.menu,
     /// чтобы не перехватывать левый клик.
     pub(super) fn show_menu(&self, _sender: *mut AnyObject) {
-        let items_ref = self.ivars().items.borrow();
-        let Some(items) = items_ref.as_ref() else {
+        let Some(items) = self.items() else {
             return;
         };
         let Some(button) = items.anchor.button(self.mtm()) else {

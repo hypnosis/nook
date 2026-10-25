@@ -114,7 +114,7 @@ impl Controller {
         if self.ivars().hidden.get() {
             self.toggle();
         }
-        if let Some(divider) = self.ivars().divider.borrow().as_ref() {
+        if let Some(divider) = self.divider() {
             divider.setLength(NARROW_ITEM_WIDTH);
         }
         self.start_restore();
