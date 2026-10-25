@@ -6,9 +6,8 @@ use objc2::{DefinedClass, MainThreadOnly};
 use objc2_app_kit::NSWorkspace;
 
 use super::Controller;
-use crate::bar::Snapshot;
+use crate::bar::{BarWindows, Snapshot};
 use crate::shroud::{Picture, Shroud};
-use crate::status_bar;
 use crate::tuning::NARROW_ITEM_WIDTH;
 
 impl Controller {
@@ -70,10 +69,7 @@ impl Controller {
             }
             return;
         }
-        let anchor_x = crate::capture::icon_layout()
-            .into_iter()
-            .find(|window| window.name == status_bar::ANCHOR_AUTOSAVE)
-            .map(|window| window.x);
+        let anchor_x = BarWindows::now().anchor().map(|window| window.x);
         match anchor_x {
             Some(right) => self.cover_now(right),
             None => log::debug!("шторка: окна `<` нет — первое раскрытие без шторки"),

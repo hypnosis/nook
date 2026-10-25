@@ -34,6 +34,9 @@ use crate::tuning::{ANCHOR_DEFAULT_PLACE, NARROW_ITEM_WIDTH, SPACER_DEFAULT_PLAC
 pub const ANCHOR_AUTOSAVE: &str = "nook-anchor";
 pub const SPACER_AUTOSAVE: &str = "nook-spacer";
 
+/// x элемента строки, которого macOS ещё не разместила.
+pub const UNPLACED_X: f64 = 0.0;
+
 /// SF Symbol спейсера-cutter (decrease.indent — нативный аналог list-indent-decrease).
 /// Видимость постоянная: cutter явно показывает границу зоны скрытия.
 const SPACER_SYMBOL: &str = "decrease.indent";

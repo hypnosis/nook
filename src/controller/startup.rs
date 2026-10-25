@@ -10,12 +10,9 @@ use objc2_foundation::NSNotificationCenter;
 
 use super::Controller;
 use crate::onboarding::Onboarding;
-use crate::status_bar;
+use crate::status_bar::{self, UNPLACED_X};
 use crate::timer::Timer;
 use crate::tuning::{DIVIDER_SETTLE_DELAY, PLACEMENT_CHECK_INTERVAL, PLACEMENT_ESCALATE_AFTER, PLACEMENT_MAX_ATTEMPTS};
-
-/// x айтема, которого macOS ещё не разместила в строке.
-const UNPLACED_X: f64 = 0.0;
 
 impl Controller {
     /// Создаёт элементы Nook, подписывается на события строки, экранов и приложений, ставит меню.

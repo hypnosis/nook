@@ -215,10 +215,7 @@ pub fn restore(panel_ids: Vec<u32>, panel_keys: Vec<String>, notch_right: f64) {
 fn wait_divider_shown() {
     let deadline = Instant::now() + DIVIDER_SHOW_TIMEOUT;
     while Instant::now() < deadline {
-        let shown = crate::capture::icon_layout()
-            .iter()
-            .any(|window| window.name == crate::divider::AUTOSAVE && window.width > 0.0);
-        if shown {
+        if crate::bar::BarWindows::now().divider().is_some_and(|divider| divider.width > 0.0) {
             return;
         }
         thread::sleep(BAR_POLL);

@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use crate::capture::IconWindow;
 use crate::layout::{Icon, Reading};
+use crate::status_bar::UNPLACED_X;
 use crate::tuning::{
     BAR_POLL, HIDING_WIDTH_MIN, NARROW_ITEM_WIDTH, NARROW_WINDOW_MAX, NOTCH_CLEARANCE, PANEL_CAPTURE_DELAY,
     POSITION_TOLERANCE, SCREEN_MARGIN, SHROUD_MARGIN, WINDOW_CHROME,
@@ -129,16 +130,50 @@ pub enum Order {
     Hidden,
 }
 
+/// Окна иконок строки за один замер; окна Nook находятся в нём по имени.
+pub struct BarWindows(Vec<IconWindow>);
+
+impl BarWindows {
+    /// Замер строки сейчас.
+    pub fn now() -> Self {
+        Self(crate::capture::icon_layout())
+    }
+
+    pub fn anchor(&self) -> Option<&IconWindow> {
+        self.named(crate::status_bar::ANCHOR_AUTOSAVE)
+    }
+
+    pub fn spacer(&self) -> Option<&IconWindow> {
+        self.named(crate::status_bar::SPACER_AUTOSAVE)
+    }
+
+    pub fn divider(&self) -> Option<&IconWindow> {
+        self.named(crate::divider::AUTOSAVE)
+    }
+
+    /// Хоть одно окно нарисовано: строка меню на экране.
+    pub fn any_onscreen(&self) -> bool {
+        self.0.iter().any(|window| window.onscreen)
+    }
+
+    fn named(&self, name: &str) -> Option<&IconWindow> {
+        self.0.iter().find(|window| window.name == name)
+    }
+}
+
+impl From<Vec<IconWindow>> for BarWindows {
+    fn from(windows: Vec<IconWindow>) -> Self {
+        Self(windows)
+    }
+}
+
 /// Вердикт по окнам Nook в строке; строка — их координаты для журнала.
 pub fn nook_order(notch_right: Option<f64>) -> (Order, String) {
-    let windows = crate::capture::icon_layout();
-    let find = |name: &str| windows.iter().find(|window| window.name == name);
-    let anchor = find(crate::status_bar::ANCHOR_AUTOSAVE);
-    let spacer = find(crate::status_bar::SPACER_AUTOSAVE);
-    let divider = find(crate::divider::AUTOSAVE);
+    let windows = BarWindows::now();
+    let (anchor, spacer, divider) = (windows.anchor(), windows.spacer(), windows.divider());
     let at = |window: Option<&IconWindow>| window.map(|w| format!("{}+{}{}", w.x, w.width, if w.onscreen { "" } else { " скрыт" }));
     let coords = format!("< {:?}, | {:?}, разделитель {:?}, чёлка {notch_right:?}", at(anchor), at(spacer), at(divider));
-    if !windows.iter().any(|window| window.onscreen) {
+    if !windows.any_onscreen() {
         return (Order::Unknown, format!("строка меню скрыта; {coords}"));
     }
     (classify(anchor, spacer, divider, notch_right), coords)
@@ -164,9 +199,6 @@ fn classify(
     Order::Ok
 }
 
-/// x окна, которое macOS ещё не разместила.
-const UNPLACED_X: f64 = 0.0;
-
 /// Очередь запросов к фоновому читателю строки: в запросе — поколение строки.
 static READER: OnceLock<Sender<u64>> = OnceLock::new();
 
@@ -190,7 +222,7 @@ fn serve(requests: Receiver<u64>) {
         while spacer_x().is_none() && Instant::now() < deadline {
             thread::sleep(BAR_POLL);
         }
-        let windows = crate::mover::wait_until_still();
+        let windows = BarWindows::from(crate::mover::wait_until_still());
         let snapshot = read(&windows, epoch, true);
         crate::controller::on_main(move |controller| controller.bar_read(snapshot));
     }
@@ -204,24 +236,22 @@ fn latest_epoch(first: u64, pending: impl Iterator<Item = u64>) -> u64 {
 /// Читает строку сразу, без ожидания. С `owners` ищет приложения иконок через
 /// Accessibility — тогда не из главного потока.
 pub fn read_now(owners: bool) -> Option<Snapshot> {
-    read(&crate::capture::icon_layout(), 0, owners)
+    read(&BarWindows::now(), 0, owners)
 }
 
 /// Левый край спейсера, если строка раскрыта.
 fn spacer_x() -> Option<f64> {
-    crate::capture::icon_layout()
-        .into_iter()
-        .find(|window| window.name == crate::status_bar::SPACER_AUTOSAVE && window.onscreen)
-        .map(|window| window.x)
+    BarWindows::now().spacer().filter(|window| window.onscreen).map(|window| window.x)
 }
 
-fn read(windows: &[IconWindow], epoch: u64, owners: bool) -> Option<Snapshot> {
-    let spacer = windows.iter().find(|window| window.name == crate::status_bar::SPACER_AUTOSAVE)?;
+fn read(windows: &BarWindows, epoch: u64, owners: bool) -> Option<Snapshot> {
+    let spacer = windows.spacer()?;
     if !spacer.onscreen {
         return None;
     }
     let spacer_x = spacer.x;
-    let left: Vec<_> = windows.iter().filter(|window| window.x < spacer_x).collect();
+    let divider_id = windows.divider().map(|divider| divider.id);
+    let left: Vec<_> = windows.0.iter().filter(|window| window.x < spacer_x).collect();
     if owners {
         let ids: Vec<u32> = left.iter().map(|window| window.id).collect();
         crate::click::remember_owners_now(&ids);
@@ -232,7 +262,7 @@ fn read(windows: &[IconWindow], epoch: u64, owners: bool) -> Option<Snapshot> {
     let mut divider = None;
     let mut seen: Vec<String> = Vec::new();
     for window in left {
-        let is_divider = window.name == crate::divider::AUTOSAVE;
+        let is_divider = Some(window.id) == divider_id;
         let key = (!is_divider).then(|| crate::click::owner_name(window.id)).flatten().map(|name| {
             let index = seen.iter().filter(|other| **other == name).count();
             seen.push(name.clone());
@@ -394,6 +424,19 @@ mod tests {
     #[test]
     fn no_notch_keeps_divider_narrow() {
         assert_eq!(narrow_bar(true).divider_length(None), Some(NARROW_ITEM_WIDTH));
+    }
+
+    #[test]
+    fn nook_windows_are_found_by_name() {
+        let named = |id, name: &str| IconWindow { id, name: name.into(), x: 0.0, width: 0.0, height: 24.0, onscreen: true };
+        let windows = BarWindows::from(vec![
+            named(1, "Ollama"),
+            named(2, crate::divider::AUTOSAVE),
+            named(3, crate::status_bar::SPACER_AUTOSAVE),
+            named(4, crate::status_bar::ANCHOR_AUTOSAVE),
+        ]);
+        let ids = (windows.divider().map(|w| w.id), windows.spacer().map(|w| w.id), windows.anchor().map(|w| w.id));
+        assert_eq!(ids, (Some(2), Some(3), Some(4)));
     }
 
     #[test]
