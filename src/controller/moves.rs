@@ -24,9 +24,11 @@ enum MoveKind {
 impl Controller {
     /// Плитка `id` брошена в редакторе. Внутри панели строку не трогаем: меняется только
     /// порядок панели. Иначе настоящая иконка переносится одним переносом: в панель —
-    /// к разделителю, в основной ряд — к соседям по редактору.
+    /// к разделителю, в основной ряд — к соседям по редактору. Свёрнутая строка сперва
+    /// раскрывается: итог переноса сверяет чтение раскрытой строки.
     pub(super) fn tile_dropped(&self, id: u32) {
-        if self.ivars().moving.get() {
+        if self.ivars().moving.get() || self.ivars().own_move.borrow().is_some() {
+            self.show_layout();
             return;
         }
         let Some((panel, main)) = self.ivars().settings.borrow().as_ref().map(|settings| settings.editor.order())
@@ -46,6 +48,9 @@ impl Controller {
             self.show_layout();
             return;
         };
+        if self.ivars().hidden.get() {
+            self.toggle();
+        }
         let kind = if panel.contains(&id) {
             MoveKind::Drop { id, before: Some(divider), after: None, panel: Some(panel) }
         } else {
@@ -76,6 +81,7 @@ impl Controller {
             self.give_back_mouse();
             self.set_moving(false);
             self.ivars().own_move.borrow_mut().take();
+            self.lock_editor();
             self.bump_epoch();
             self.show_layout();
             self.request_read();
@@ -99,11 +105,17 @@ impl Controller {
         }
     }
 
-    /// Пока брошенная иконка едет, строка не читается и плитки не берутся.
+    /// Пока брошенная иконка едет, строка не читается.
     pub(super) fn set_moving(&self, moving: bool) {
         self.ivars().moving.set(moving);
+        self.lock_editor();
+    }
+
+    /// Плитки не берутся, пока перенос идёт или его итог ещё не сверен с чтением строки.
+    pub(super) fn lock_editor(&self) {
+        let locked = self.ivars().moving.get() || self.ivars().own_move.borrow().is_some();
         if let Some(settings) = self.ivars().settings.borrow().as_ref() {
-            settings.editor.set_locked(moving);
+            settings.editor.set_locked(locked);
         }
     }
 
@@ -125,13 +137,13 @@ impl Controller {
         self.start_move(OwnMove { kind: MoveKind::Restore, retried: false });
     }
 
-    /// Запускает перенос Nook. Пока он идёт, строка не читается, курсор спрятан и мышь отвязана.
+    /// Запускает перенос Nook. Пока он идёт, строка не читается; с первого события курсор спрятан
+    /// и мышь отвязана.
     /// Повтор возврата панели ищет иконки по ключам: окна в модели уже следуют строке.
     fn start_move(&self, own: OwnMove) {
         self.set_moving(true);
         self.bump_epoch();
         self.ivars().mouse_taken.set(true);
-        crate::mover::take_mouse();
         match &own.kind {
             MoveKind::Drop { id, before, after, .. } => crate::mover::move_one(*id, *before, *after, self.notch_right()),
             MoveKind::Restore => {
@@ -145,6 +157,7 @@ impl Controller {
             }
         }
         *self.ivars().own_move.borrow_mut() = Some(own);
+        self.lock_editor();
         self.arm_move_watchdog();
     }
 

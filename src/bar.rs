@@ -233,10 +233,10 @@ fn latest_epoch(first: u64, pending: impl Iterator<Item = u64>) -> u64 {
     pending.fold(first, u64::max)
 }
 
-/// Читает строку сразу, без ожидания. С `owners` ищет приложения иконок через
-/// Accessibility — тогда не из главного потока.
-pub fn read_now(owners: bool) -> Option<Snapshot> {
-    read(&BarWindows::now(), 0, owners)
+/// Читает строку, когда она встанет. С `owners` ищет приложения иконок через Accessibility —
+/// тогда не из главного потока.
+pub fn read_still(owners: bool) -> Option<Snapshot> {
+    read(&BarWindows::from(crate::mover::wait_until_still()), 0, owners)
 }
 
 /// Левый край спейсера, если строка раскрыта.

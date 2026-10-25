@@ -112,6 +112,7 @@ impl Controller {
         self.bump_epoch();
         if automatic {
             self.ivars().own_move.borrow_mut().take();
+            self.lock_editor();
             self.read_after(DIVIDER_SETTLE_DELAY);
         } else {
             self.restore_layout();

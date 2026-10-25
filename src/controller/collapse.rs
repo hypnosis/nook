@@ -18,7 +18,7 @@ use crate::tuning::{
 
 impl Controller {
     /// Движение мыши (от монитора). Работает только когда иконки показаны.
-    /// Мышь в полосе menu bar или над панелью → гасим таймер коллапса.
+    /// Мышь в полосе menu bar, над панелью или в редакторе → гасим таймер коллапса.
     /// Мышь ушла → взводим.
     pub(super) fn mouse_moved(&self) {
         if self.ivars().hidden.get() {
@@ -26,7 +26,7 @@ impl Controller {
         }
         let in_strip = auto_collapse::mouse_in_menu_bar_strip(self.mtm());
         let in_panel = self.mouse_in_panel();
-        if in_strip || in_panel {
+        if in_strip || in_panel || self.layout_active() {
             self.cancel_collapse_timer();
         } else if self.ivars().collapse_timer.borrow().is_none() {
             self.arm_collapse_timer();
@@ -34,10 +34,12 @@ impl Controller {
     }
 
     /// Таймер коллапса дожил: мышь была вне полосы `COLLAPSE_DELAY`. Пока открыто меню копии,
-    /// сворачивание откладывается на тот же срок; мышь снова в строке или над панелью — нет.
+    /// сворачивание откладывается на тот же срок; мышь снова в строке или над панелью, или в
+    /// редакторе работают — нет.
     pub(super) fn auto_collapse(&self) {
         self.ivars().collapse_timer.borrow_mut().take();
-        if self.ivars().hidden.get() || self.ivars().moving.get() {
+        let busy = self.ivars().moving.get() || self.ivars().own_move.borrow().is_some();
+        if self.ivars().hidden.get() || busy || self.layout_active() {
             return;
         }
         if crate::press::menu_open() {

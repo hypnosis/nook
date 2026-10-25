@@ -224,6 +224,11 @@ impl Settings {
         self.window.isVisible() && self.sidebar.selected() == Some(LAYOUT_PANE)
     }
 
+    /// С разделом «Расположение» сейчас работают: окно настроек активно.
+    pub fn is_layout_active(&self) -> bool {
+        self.window.isKeyWindow() && self.is_layout_shown()
+    }
+
     pub fn show(&self, mtm: MainThreadMarker) {
         self.refresh();
         NSApplication::sharedApplication(mtm).activate();

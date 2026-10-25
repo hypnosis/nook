@@ -1,13 +1,14 @@
 //! Перенос одной настоящей иконки строки меню к соседу: событиями мыши с Cmd,
-//! адресованными окнам, запасной путь — перетаскивание. На время переноса курсор
-//! спрятан, а физическая мышь отвязана от него.
+//! адресованными окнам, запасной путь — перетаскивание. С первого события переноса и до
+//! конца курсор спрятан, а физическая мышь отвязана от него.
 
 use std::cell::Cell;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use dispatch2::DispatchQueue;
 use objc2_core_foundation::{kCFBooleanTrue, CFString, CFType, CGPoint};
 use objc2_core_graphics::{
     kCGEventFilterMaskPermitAllEvents, CGAssociateMouseAndMouseCursorPosition, CGDisplayHideCursor,
@@ -18,8 +19,9 @@ use objc2_core_graphics::{
 
 use crate::capture::IconWindow;
 use crate::tuning::{
-    BAR_POLL, DIVIDER_SHOW_TIMEOUT, DROP_NUDGE, DROP_OFFSET, FAST_STEP, POSITION_TOLERANCE, SAFE_STEP, SETTLE_TIMEOUT, STILL_POLL, STILL_READS,
-    STILL_TIMEOUT, TARGETED_TIMEOUT,
+    BAR_POLL, DIVIDER_SHOW_TIMEOUT, DROP_NUDGE, DROP_OFFSET, FAST_STEP, POSITION_TOLERANCE, RESTORE_BLIND_READS,
+    RESTORE_TRIES_PER_ICON,
+    SAFE_STEP, SETTLE_TIMEOUT, STILL_POLL, STILL_READS, STILL_TIMEOUT, TARGETED_TIMEOUT,
 };
 
 /// Поле события с номером окна; в публичных заголовках его нет.
@@ -61,6 +63,9 @@ static STUCK: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 /// Номер текущего переноса: растёт при каждом запуске и отмене.
 static RUN: AtomicU64 = AtomicU64::new(0);
 
+/// Курсор спрятан и мышь отвязана.
+static MOUSE_TAKEN: AtomicBool = AtomicBool::new(false);
+
 thread_local! {
     /// Номер переноса, который ведёт этот поток.
     static OWN_RUN: Cell<u64> = const { Cell::new(0) };
@@ -97,15 +102,43 @@ pub fn allow_cursor_hiding_in_background() {
     }
 }
 
-/// Прячет курсор и отвязывает от него физическую мышь. Только из главного потока.
-pub fn take_mouse() {
-    CGDisplayHideCursor(CGMainDisplayID());
-    CGAssociateMouseAndMouseCursorPosition(false);
+/// Возвращает мышь, если перенос её забрал. Только из главного потока.
+pub fn release_mouse() {
+    if MOUSE_TAKEN.swap(false, Ordering::SeqCst) {
+        CGAssociateMouseAndMouseCursorPosition(true);
+        CGDisplayShowCursor(CGMainDisplayID());
+    }
 }
 
-pub fn release_mouse() {
-    CGAssociateMouseAndMouseCursorPosition(true);
-    CGDisplayShowCursor(CGMainDisplayID());
+/// Мышь пользователя на время переноса: забирается перед первым событием, курсор потом
+/// встаёт туда, где был. Пока событий нет, мышь свободна.
+#[derive(Default)]
+struct Grab {
+    home: Option<CGPoint>,
+}
+
+impl Grab {
+    fn take(&mut self) {
+        if self.home.is_some() {
+            return;
+        }
+        self.home = Some(CGEvent::location(CGEvent::new(None).as_deref()));
+        let run = OWN_RUN.get();
+        // Отмену шлёт главный поток: проверка там же не даст спрятать курсор после отмены.
+        DispatchQueue::main().exec_sync(move || {
+            if run == RUN.load(Ordering::SeqCst) && !MOUSE_TAKEN.swap(true, Ordering::SeqCst) {
+                CGDisplayHideCursor(CGMainDisplayID());
+                CGAssociateMouseAndMouseCursorPosition(false);
+            }
+        });
+    }
+
+    fn put_back(self) {
+        if let Some(home) = self.home {
+            post(CGEventType::MouseMoved, home, CGEventFlags::empty());
+            CGWarpMouseCursorPosition(home);
+        }
+    }
 }
 
 /// Перенос идёт, но шага не было дольше `limit` — значит, завис.
@@ -135,8 +168,8 @@ fn is_cancelled() -> bool {
 }
 
 /// Ставит одну иконку `id` левее `before` и правее `after` (соседи по строке, один из них
-/// может быть разделителем) и сообщает контроллеру, что перенос закончен. Иконка, которая
-/// не приняла ни один способ переноса, до перезапуска Nook больше не переносится.
+/// может быть разделителем) и сообщает контроллеру, что перенос закончен. Бросок пробует
+/// всегда; иконку, которая не приняла ни один способ, возврат панели потом пропускает.
 /// `notch_right` — правый край чёлки: левее него иконку не отпускаем.
 pub fn move_one(id: u32, before: Option<u32>, after: Option<u32>, notch_right: f64) {
     let run = RUN.fetch_add(1, Ordering::SeqCst) + 1;
@@ -144,18 +177,18 @@ pub fn move_one(id: u32, before: Option<u32>, after: Option<u32>, notch_right: f
     thread::spawn(move || {
         OWN_RUN.set(run);
         let started = Instant::now();
-        let moved = if stuck().contains(&id) {
-            log::debug!("окно {id} не переносится — пропускаю");
-            false
-        } else {
+        let moved = {
             crate::click::remember_owners_now(&[id]);
             permit_local_events();
-            let home = CGEvent::location(CGEvent::new(None).as_deref());
-            let outcome = move_next_to(id, before, after, notch_right);
-            post(CGEventType::MouseMoved, home, CGEventFlags::empty());
-            CGWarpMouseCursorPosition(home);
-            if matches!(outcome, Outcome::Stuck) {
-                stuck().push(id);
+            wait_until_still();
+            let mut grab = Grab::default();
+            let outcome = move_next_to(id, before, after, notch_right, &mut grab);
+            grab.put_back();
+            match outcome {
+                Outcome::Stuck if !stuck().contains(&id) => stuck().push(id),
+                Outcome::Stuck => {}
+                Outcome::Moved => stuck().retain(|stuck| *stuck != id),
+                Outcome::Missed | Outcome::Skipped => {}
             }
             matches!(outcome, Outcome::Moved | Outcome::Skipped)
         };
@@ -172,8 +205,8 @@ pub fn move_one(id: u32, before: Option<u32>, after: Option<u32>, notch_right: f
 /// Возвращает запомненную раскладку: иконки панели — левее разделителя панели, остальные —
 /// правее. Иконка панели — с окном из `panel_ids` или с ключом из `panel_keys`; ключи ищутся,
 /// только если окон модель ещё не знает. Переносятся только чужие иконки, к разделителю:
-/// событие, пришедшее в сам Nook, показывает спрятанный курсор. Курсор спрятан заранее,
-/// на главном потоке; по окончании сообщает контроллеру.
+/// событие, пришедшее в сам Nook, показывает спрятанный курсор. Перед каждым переносом строка
+/// читается заново, когда встанет: перенос сдвигает соседей. По окончании сообщает контроллеру.
 pub fn restore(panel_ids: Vec<u32>, panel_keys: Vec<String>, notch_right: f64) {
     let run = RUN.fetch_add(1, Ordering::SeqCst) + 1;
     *last_step() = Some(Instant::now());
@@ -181,31 +214,48 @@ pub fn restore(panel_ids: Vec<u32>, panel_keys: Vec<String>, notch_right: f64) {
         OWN_RUN.set(run);
         let started = Instant::now();
         permit_local_events();
-        let home = CGEvent::location(CGEvent::new(None).as_deref());
         wait_divider_shown();
-        wait_until_still();
         let in_panel = |slot: &crate::bar::Slot| {
             panel_ids.contains(&slot.id) || slot.key.as_ref().is_some_and(|key| panel_keys.contains(key))
         };
-        let mut moves = 0;
-        let snapshot = crate::bar::read_now(panel_ids.is_empty());
-        match snapshot.as_ref().and_then(|snapshot| snapshot.divider.as_ref().map(|divider| (snapshot, divider))) {
-            Some((snapshot, divider)) => {
-                for slot in &snapshot.icons {
-                    let destination = match (in_panel(slot), slot.x < divider.x) {
-                        (true, false) => (Some(divider.id), None),
-                        (false, true) => (None, Some(divider.id)),
-                        _ => continue,
-                    };
-                    move_next_to(slot.id, destination.0, destination.1, notch_right);
-                    moves += 1;
-                }
+        let mut grab = Grab::default();
+        let mut tried: Vec<u32> = Vec::new();
+        let mut owners = panel_ids.is_empty();
+        let mut blind_reads = 0;
+        while !is_cancelled() {
+            mark_step();
+            let Some(snapshot) = crate::bar::read_still(owners) else {
+                log::warn!("раскладка: строка не прочитана — восстанавливать не к чему");
+                break;
+            };
+            owners = false;
+            let Some(divider) = snapshot.divider.as_ref() else {
+                log::warn!("раскладка: разделителя панели нет в строке — восстанавливать не к чему");
+                break;
+            };
+            // Узкий разделитель под чёлкой сторон не даёт: строка ещё раскладывается, ждём её.
+            if snapshot.reading().is_some() {
+                blind_reads = 0;
+            } else if blind_reads < RESTORE_BLIND_READS {
+                blind_reads += 1;
+                continue;
             }
-            None => log::warn!("раскладка: разделителя панели нет в строке — восстанавливать не к чему"),
+            let tries = |id: u32| tried.iter().filter(|tried| **tried == id).count();
+            let stuck_now = stuck().clone();
+            let movable = |slot: &&crate::bar::Slot| tries(slot.id) < RESTORE_TRIES_PER_ICON && !stuck_now.contains(&slot.id);
+            let misplaced = snapshot.icons.iter().filter(movable).find_map(|slot| {
+                match (in_panel(slot), slot.x < divider.x) {
+                    (true, false) => Some((slot.id, Some(divider.id), None)),
+                    (false, true) => Some((slot.id, None, Some(divider.id))),
+                    _ => None,
+                }
+            });
+            let Some((id, before, after)) = misplaced else { break };
+            tried.push(id);
+            move_next_to(id, before, after, notch_right, &mut grab);
         }
-        post(CGEventType::MouseMoved, home, CGEventFlags::empty());
-        CGWarpMouseCursorPosition(home);
-        log::info!("раскладка: восстановлена за {} мс, переносов {moves}", started.elapsed().as_millis());
+        grab.put_back();
+        log::info!("раскладка: восстановлена за {} мс, попыток {}", started.elapsed().as_millis(), tried.len());
         *last_step() = None;
         crate::controller::on_main(|controller| controller.layout_restored());
     });
@@ -246,7 +296,7 @@ fn placement(layout: &[IconWindow], id: u32, before: Option<u32>, after: Option<
 
 /// Ставит `id` к соседу: левее `before`, если его край на экране, иначе правее `after`.
 /// Сначала адресный перенос, потом перетаскивание — только если иконка и сосед нарисованы.
-fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>, notch_right: f64) -> Outcome {
+fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>, notch_right: f64, grab: &mut Grab) -> Outcome {
     mark_step();
     let layout = crate::capture::icon_layout();
     let Some(item) = layout.iter().find(|window| window.id == id) else { return Outcome::Skipped };
@@ -272,6 +322,7 @@ fn move_next_to(id: u32, before: Option<u32>, after: Option<u32>, notch_right: f
         Destination::LeftOf(next) => CGPoint::new(next.x + DROP_OFFSET, from.y),
         Destination::RightOf(previous) => CGPoint::new(previous.x + previous.width - DROP_OFFSET, from.y),
     };
+    grab.take();
     let started = Instant::now();
     let preferred = PREFERRED.load(Ordering::Relaxed);
     // Адресный — всегда первым: осечка одной иконки не переводит следующие на перетаскивание.

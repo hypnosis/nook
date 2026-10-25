@@ -84,6 +84,11 @@ pub const FAST_STEP: Duration = Duration::from_millis(12);
 pub const SAFE_STEP: Duration = Duration::from_millis(50);
 /// Сколько ждать, что окно сдвинулось после перетаскивания.
 pub const SETTLE_TIMEOUT: Duration = Duration::from_millis(250);
+/// Столько раз возврат панели пробует перенести одну иконку.
+pub const RESTORE_TRIES_PER_ICON: usize = 2;
+/// Столько раз подряд возврат панели перечитывает строку, пока разделитель спрятан под чёлкой;
+/// дальше решает по координатам.
+pub const RESTORE_BLIND_READS: u32 = 5;
 /// Строка считается успокоившейся после стольких одинаковых замеров подряд.
 pub const STILL_READS: u32 = 2;
 pub const STILL_POLL: Duration = Duration::from_millis(10);

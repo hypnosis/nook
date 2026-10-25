@@ -81,6 +81,7 @@ impl Controller {
             if let Some(own) = own {
                 let Some(settled) = self.settle_own_move(own) else { return };
                 changed |= settled;
+                self.lock_editor();
             }
             let layout = self.ivars().layout.borrow();
             if changed {
@@ -190,6 +191,11 @@ impl Controller {
 
     pub(super) fn layout_shown(&self) -> bool {
         self.ivars().settings.borrow().as_ref().is_some_and(Settings::is_layout_shown)
+    }
+
+    /// В редакторе сейчас работают: строка должна оставаться раскрытой.
+    pub(super) fn layout_active(&self) -> bool {
+        self.ivars().settings.borrow().as_ref().is_some_and(Settings::is_layout_active)
     }
 
     /// Плитку тянут или иконку переносят: редактор не перестраивается.
