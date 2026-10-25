@@ -22,7 +22,7 @@ use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly, Message};
 use objc2::sel;
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSApplicationDidChangeScreenParametersNotification, NSButton, NSEvent,
+    NSApplicationDidChangeScreenParametersNotification, NSButton,
     NSControlStateValueOn, NSEventType, NSImage, NSScreen, NSStatusItem, NSSwitch, NSWindow,
     NSWindowDidBecomeKeyNotification, NSWindowDidMoveNotification, NSWindowWillCloseNotification, NSWorkspace,
     NSWorkspaceDidActivateApplicationNotification,
@@ -45,10 +45,13 @@ use crate::status_bar::{
 use crate::strings::{self, Lang};
 use crate::tuning::{
     ANCHOR_MAX_RETRIES, COLLAPSE_DELAY, DIVIDER_SETTLE_DELAY, HIDDEN_WIDTH_MARGIN, HIDDEN_WIDTH_MAX, HIDING_WIDTH_MIN,
-    MOVE_WATCHDOG, MOVE_WATCHDOG_POLL, NARROW_ITEM_WIDTH, ORDER_BAD_READS, ORDER_CHECK_INTERVAL,
-    PANEL_REFRESH_INTERVAL, PLACEMENT_CHECK_INTERVAL, SCREEN_SETTLE,
+    MOVE_WATCHDOG, MOVE_WATCHDOG_POLL, NARROW_ITEM_WIDTH,
+    PANEL_REFRESH_INTERVAL, PLACEMENT_CHECK_INTERVAL,
     PLACEMENT_ESCALATE_AFTER, PLACEMENT_MAX_ATTEMPTS, POSITION_TOLERANCE, SCREEN_WIDTH_FALLBACK,
 };
+
+mod shroud;
+mod watchdog;
 
 /// x айтема, которого macOS ещё не разместила в строке.
 const UNPLACED_X: f64 = 0.0;
@@ -408,74 +411,24 @@ define_class!(
             }
         }
 
-        /// Сторож: нарушенный порядок, державшийся несколько проверок подряд, блокирует скрытие и
-        /// ставит ⚠. Спрятанный `<` — не нарушение: его прячет macOS, и место `<` Nook не меняет.
         #[unsafe(method(onOrderCheck:))]
         fn on_order_check(&self, _timer: *mut AnyObject) {
-            let settling = self
-                .ivars()
-                .screens_changed
-                .get()
-                .is_some_and(|at| at.elapsed() < SCREEN_SETTLE);
-            if self.ivars().moving.get() || NSEvent::pressedMouseButtons() != 0 || settling {
-                return;
-            }
-            let (order, coords) = crate::bar::nook_order(self.notch_edge());
-            match order {
-                Order::Unknown | Order::Hidden => {}
-                Order::Ok => {
-                    self.ivars().bad_reads.set(0);
-                    if self.ivars().blocked.replace(false) {
-                        if let Some(items) = self.ivars().items.borrow().as_ref() {
-                            let symbol = if self.ivars().hidden.get() { ANCHOR_SYMBOL_HIDDEN } else { ANCHOR_SYMBOL_SHOWN };
-                            status_bar::set_anchor_symbol(items, self.mtm(), symbol);
-                        }
-                        log::info!("сторож: порядок восстановлен — {coords}");
-                        self.request_read();
-                    }
-                }
-                Order::Misordered => {
-                    let bad = self.ivars().bad_reads.get() + 1;
-                    self.ivars().bad_reads.set(bad);
-                    if bad >= ORDER_BAD_READS {
-                        self.show_blocked(order, &coords);
-                    }
-                }
-            }
+            self.check_order();
         }
 
-        /// Экраны сменились: строка раскладывается заново, сторож переждёт.
         #[unsafe(method(onScreensChanged:))]
         fn on_screens_changed(&self, _notification: &NSNotification) {
-            self.ivars().screens_changed.set(Some(Instant::now()));
-            self.ivars().bad_reads.set(0);
+            self.screens_changed();
         }
 
-        /// Готова картинка пустой полосы: шторка встаёт на неё, если строка с тех пор не менялась
-        /// и нажатая иконка не подсвечена.
         #[unsafe(method(onShroudPicture))]
         fn on_shroud_picture(&self) {
-            let Some((image, rect, epoch)) = crate::shroud::take_picture() else { return };
-            if epoch != self.ivars().epoch.get()
-                || self.ivars().hidden.get()
-                || crate::settings::automatic_layout()
-                || crate::press::icon_highlighted()
-            {
-                return;
-            }
-            if let Some(shroud) = self.ivars().shroud.borrow_mut().as_mut() {
-                shroud.show(self.mtm(), &image, rect);
-                log::debug!("шторка: встала {:.0}..{:.0}", rect.origin.x, rect.origin.x + rect.size.width);
-            }
+            self.place_shroud();
         }
 
-        /// Строка свернулась и встала: иконки панели ушли за край, шторка больше не нужна.
         #[unsafe(method(onCollapseSettled))]
         fn on_collapse_settled(&self) {
-            if self.ivars().hidden.get() {
-                self.hide_shroud();
-                log::debug!("шторка: ушла после сворачивания");
-            }
+            self.shroud_after_collapse();
         }
 
         /// Строка прочитана. Сначала разделитель получает нужную длину, шторка встаёт над
@@ -673,24 +626,9 @@ define_class!(
             }
         }
 
-        /// Сменилось активное приложение: его меню заходит в полосу — шторка уходит сразу, не
-        /// дожидаясь чтения; строка читается заново.
         #[unsafe(method(onAppActivated:))]
         fn on_app_activated(&self, _notification: &NSNotification) {
-            if self.ivars().hidden.get() {
-                return;
-            }
-            let shown = self.ivars().shroud.borrow().as_ref().filter(|shroud| shroud.is_shown()).and_then(Shroud::rect);
-            if let Some(rect) = shown {
-                let pid = NSWorkspace::sharedWorkspace().frontmostApplication().map(|app| app.processIdentifier());
-                let menu_right = pid.and_then(crate::click::menu_right_of);
-                if crate::bar::menu_covers(menu_right, rect.origin.x) {
-                    self.hide_shroud();
-                    log::debug!("шторка: меню приложения до {menu_right:?} заходит в полосу — ушла");
-                }
-            }
-            self.bump_epoch();
-            self.request_read();
+            self.app_activated();
         }
 
         /// Клик по копии в панели — нажимаем настоящую иконку там, где она спрятана.
@@ -880,21 +818,6 @@ impl Controller {
             .show_below(&anchor_window);
     }
 
-    /// Сторож сверяет порядок, пока строка раскрыта. В свёрнутой строке он не нужен: перед
-    /// сворачиванием порядок проверяет `toggle`.
-    fn watch_order(&self, on: bool) {
-        let mut timer = self.ivars().order_timer.borrow_mut();
-        if !on {
-            if timer.take().is_some() {
-                self.ivars().bad_reads.set(0);
-            }
-            return;
-        }
-        if timer.is_none() {
-            *timer = Some(Timer::repeating(self.as_ref(), ORDER_CHECK_INTERVAL, sel!(onOrderCheck:)));
-        }
-    }
-
     /// Nook сам меняет строку: чтения, начатые раньше, не принимаются.
     fn bump_epoch(&self) {
         self.ivars().epoch.set(self.ivars().epoch.get() + 1);
@@ -910,55 +833,6 @@ impl Controller {
     /// Читает строку через `delay`, когда macOS разложит её после действия Nook.
     fn read_after(&self, delay: Duration) {
         crate::timer::after(self.as_ref(), delay, sel!(onBarTick:));
-    }
-
-    /// До раскрытия шторка встаёт на прошлое место, чтобы иконки панели не мелькнули. В первый
-    /// раз места нет: шторка закрывает всё от чёлки до `<`, первое чтение её уточнит.
-    fn cover_before_expand(&self) {
-        if crate::settings::automatic_layout() || !self.divider_narrow() {
-            return;
-        }
-        let last = self.ivars().shroud.borrow().as_ref().and_then(Shroud::rect);
-        if let Some(rect) = last {
-            if crate::bar::menu_covers(crate::click::app_menu_right(), rect.origin.x) {
-                log::debug!("шторка: меню приложения заходит в полосу — раскрываю без шторки");
-            } else if let Some(shroud) = self.ivars().shroud.borrow_mut().as_mut() {
-                shroud.show_again();
-            }
-            return;
-        }
-        let anchor_x = crate::capture::icon_layout()
-            .into_iter()
-            .find(|window| window.name == status_bar::ANCHOR_AUTOSAVE)
-            .map(|window| window.x);
-        match anchor_x {
-            Some(right) => self.cover_now(right),
-            None => log::debug!("шторка: окна `<` нет — первое раскрытие без шторки"),
-        }
-    }
-
-    /// Шторка сразу закрывает всё от чёлки до `right`: туда сейчас встанут иконки панели.
-    fn cover_now(&self, right: f64) {
-        let left = self.notch_edge().unwrap_or(0.0);
-        if crate::bar::menu_covers(crate::click::app_menu_right(), left) {
-            log::debug!("шторка: меню приложения заходит в полосу {left:.0}..{right:.0} — без шторки");
-            return;
-        }
-        let mut shroud = self.ivars().shroud.borrow_mut();
-        let shroud = shroud.get_or_insert_with(|| Shroud::new(self.mtm()));
-        let started = Instant::now();
-        match crate::shroud::shoot_now(left, right, shroud.window_id()) {
-            Some((image, rect)) => {
-                shroud.show(self.mtm(), &image, rect);
-                log::debug!("шторка: закрыла {left:.0}..{right:.0}, снимок {} мс", started.elapsed().as_millis());
-            }
-            None => log::debug!("шторка: снимка полосы {left:.0}..{right:.0} нет"),
-        }
-    }
-
-    /// Разделитель панели сейчас узкий.
-    fn divider_narrow(&self) -> bool {
-        self.ivars().divider.borrow().as_ref().is_some_and(|divider| divider.length() <= NARROW_ITEM_WIDTH)
     }
 
     /// Держит длину разделителя в ручном режиме по правилу `Snapshot::divider_length`. Перед
@@ -992,53 +866,6 @@ impl Controller {
         self.bump_epoch();
         self.request_read();
         true
-    }
-
-    /// Шторка уходит, когда свёрнутая строка встанет.
-    fn uncover_after_collapse(&self) {
-        if self.ivars().shroud.borrow().is_some() {
-            crate::shroud::hide_when_still();
-        }
-    }
-
-    fn hide_shroud(&self) {
-        if let Some(shroud) = self.ivars().shroud.borrow().as_ref() {
-            shroud.hide();
-        }
-    }
-
-    /// Шторка закрывает нарисованные иконки панели по свежему чтению. Картинка пустой строки
-    /// переснимается, только когда сменилась полоса или картинка устарела, и никогда — пока
-    /// открыто меню нажатой иконки: её подсветку macOS рисует в самой строке. В авторежиме
-    /// шторки нет.
-    fn follow_shroud(&self, snapshot: &Snapshot, automatic: bool) {
-        let strip = if automatic { None } else { snapshot.shroud_strip() };
-        if !automatic {
-            let shown = self
-                .ivars()
-                .shroud
-                .borrow()
-                .as_ref()
-                .filter(|shroud| shroud.is_shown())
-                .and_then(Shroud::rect)
-                .map(|rect| (rect.origin.x, rect.origin.x + rect.size.width));
-            let (outside, main_hidden) = snapshot.shroud_report(shown);
-            log::debug!(
-                "шторка: показана {shown:?}, полоса {strip:?}, иконки панели вне шторки: {outside}, основной ряд не нарисован: {main_hidden}"
-            );
-        }
-        let Some((left, right)) = strip else {
-            self.hide_shroud();
-            return;
-        };
-        if crate::press::icon_highlighted() {
-            return;
-        }
-        let mut shroud = self.ivars().shroud.borrow_mut();
-        let shroud = shroud.get_or_insert_with(|| Shroud::new(self.mtm()));
-        if shroud.needs_shot(left, right) {
-            crate::shroud::shoot_later(left, right, shroud.window_id(), self.ivars().epoch.get());
-        }
     }
 
     /// Разделитель в строке есть только в ручном режиме. Невидимый, он не занимает места,
