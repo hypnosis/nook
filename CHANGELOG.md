@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.7] - 2026-10-25
+
+### Fixed
+- A menu opened from a panel icon now opens near the notch. The panel divider is narrow (12 pt), so panel icons sit at the notch under the shroud, which shows a snapshot of the empty menu bar strip. When space at the notch is tight, the divider is 500 pt.
+- The shroud catches clicks, and Nook does not become the active app because of them.
+- The shroud steps aside when the active app's menu reaches its strip (for example Keynote) and returns right after.
+- Gray ghost: the shroud is not re-captured while an icon's menu or window is open.
+- The watchdog never moves `<`. When macOS hides it for a while, Nook waits; ⚠ shows only when the order is mixed up.
+- An old menu bar read no longer overwrites a fresher one.
+
 ## [0.4.6] - 2026-10-15
 
 ### Fixed
