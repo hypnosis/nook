@@ -35,6 +35,8 @@ pub struct Snapshot {
     pub icons: Vec<Slot>,
     pub divider: Option<Slot>,
     spacer_x: f64,
+    /// Правый край меню активного приложения.
+    menu_right: Option<f64>,
 }
 
 impl Snapshot {
@@ -95,7 +97,8 @@ impl Snapshot {
     }
 
     /// Полоса шторки (левый и правый x): от самой левой нарисованной иконки панели с запасом
-    /// на подсветку до основного ряда. Иконок панели в строке не видно или разделитель не нарисован — `None`.
+    /// на подсветку до основного ряда. Иконок панели в строке не видно, разделитель не нарисован
+    /// или меню активного приложения заходит в полосу — `None`.
     pub fn shroud_strip(&self) -> Option<(f64, f64)> {
         let divider = self.divider.as_ref().filter(|divider| divider.onscreen)?;
         let left = self
@@ -104,8 +107,17 @@ impl Snapshot {
             .filter(|slot| slot.onscreen && slot.x < divider.x)
             .map(|slot| slot.x - SHROUD_MARGIN)
             .reduce(f64::min)?;
+        if menu_covers(self.menu_right, left) {
+            return None;
+        }
         Some((left, self.main_left()?))
     }
+}
+
+/// Меню приложения с правым краем `menu_right` заходит правее `left`. Там, где лежит меню,
+/// macOS сама прячет иконки под ним, и шторка закрыла бы само меню.
+pub fn menu_covers(menu_right: Option<f64>, left: f64) -> bool {
+    menu_right.is_some_and(|right| right > left)
 }
 
 /// Состояние элементов Nook в строке.
@@ -213,6 +225,7 @@ fn read(epoch: u64, owners: bool) -> Option<Snapshot> {
         let ids: Vec<u32> = left.iter().map(|window| window.id).collect();
         crate::click::remember_owners_now(&ids);
     }
+    let menu_right = owners.then(crate::click::app_menu_right).flatten();
 
     let mut icons = Vec::new();
     let mut divider = None;
@@ -236,11 +249,11 @@ fn read(epoch: u64, owners: bool) -> Option<Snapshot> {
         format!("{}:{}@{:.0}+{:.0}{hidden}", slot.id, slot.key.as_deref().unwrap_or("?"), slot.x, slot.width)
     };
     log::debug!(
-        "строка: иконки [{}], разделитель {:?}, спейсер @{spacer_x:.0}",
+        "строка: иконки [{}], разделитель {:?}, спейсер @{spacer_x:.0}, меню до {menu_right:?}",
         icons.iter().map(at).collect::<Vec<_>>().join(", "),
         divider.as_ref().map(at)
     );
-    Some(Snapshot { epoch, icons, divider, spacer_x })
+    Some(Snapshot { epoch, icons, divider, spacer_x, menu_right })
 }
 
 #[cfg(test)]
@@ -313,7 +326,15 @@ mod tests {
             ],
             divider: Some(slot(935.0, 28.0, divider_onscreen)),
             spacer_x: 1122.0,
+            menu_right: Some(700.0),
         }
+    }
+
+    #[test]
+    fn no_shroud_when_app_menu_reaches_strip() {
+        let mut bar = narrow_bar(true);
+        bar.menu_right = Some(900.0);
+        assert_eq!(bar.shroud_strip(), None);
     }
 
     #[test]

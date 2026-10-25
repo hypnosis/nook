@@ -24,7 +24,8 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
     NSApplicationDidChangeScreenParametersNotification, NSButton, NSEvent,
     NSControlStateValueOn, NSEventType, NSImage, NSScreen, NSStatusItem, NSSwitch, NSWindow,
-    NSWindowDidBecomeKeyNotification, NSWindowDidMoveNotification, NSWindowWillCloseNotification,
+    NSWindowDidBecomeKeyNotification, NSWindowDidMoveNotification, NSWindowWillCloseNotification, NSWorkspace,
+    NSWorkspaceDidActivateApplicationNotification,
 };
 use objc2_foundation::{
     NSArray, NSNotification, NSNotificationCenter, NSNumber, NSPoint, NSProcessInfo, NSTimer,
@@ -138,6 +139,14 @@ define_class!(
                 );
             }
             crate::theme::observe(target);
+            unsafe {
+                NSWorkspace::sharedWorkspace().notificationCenter().addObserver_selector_name_object(
+                    target,
+                    sel!(onAppActivated:),
+                    Some(NSWorkspaceDidActivateApplicationNotification),
+                    None,
+                );
+            }
             unsafe {
                 NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
                     target,
@@ -693,6 +702,14 @@ define_class!(
             }
         }
 
+        /// Сменилось активное приложение: его меню может зайти в полосу шторки, строка читается сразу.
+        #[unsafe(method(onAppActivated:))]
+        fn on_app_activated(&self, _notification: &NSNotification) {
+            if !self.ivars().hidden.get() {
+                self.request_read();
+            }
+        }
+
         /// Клик по копии в панели — нажимаем настоящую иконку там, где она спрятана.
         #[unsafe(method(onCloneClick:))]
         fn on_clone_click(&self, sender: &NSButton) {
@@ -908,8 +925,13 @@ impl Controller {
         if crate::settings::automatic_layout() || !self.divider_narrow() {
             return;
         }
-        if let Some(shroud) = self.ivars().shroud.borrow_mut().as_mut().filter(|shroud| shroud.rect().is_some()) {
-            shroud.show_again();
+        let last = self.ivars().shroud.borrow().as_ref().and_then(Shroud::rect);
+        if let Some(rect) = last {
+            if crate::bar::menu_covers(crate::click::app_menu_right(), rect.origin.x) {
+                log::debug!("шторка: меню приложения заходит в полосу — раскрываю без шторки");
+            } else if let Some(shroud) = self.ivars().shroud.borrow_mut().as_mut() {
+                shroud.show_again();
+            }
             return;
         }
         let anchor_x = crate::capture::icon_layout()
@@ -925,6 +947,10 @@ impl Controller {
     /// Шторка сразу закрывает всё от чёлки до `right`: туда сейчас встанут иконки панели.
     fn cover_now(&self, right: f64) {
         let left = self.notch_edge().unwrap_or(0.0);
+        if crate::bar::menu_covers(crate::click::app_menu_right(), left) {
+            log::debug!("шторка: меню приложения заходит в полосу {left:.0}..{right:.0} — без шторки");
+            return;
+        }
         let mut shroud = self.ivars().shroud.borrow_mut();
         let shroud = shroud.get_or_insert_with(|| Shroud::new(self.mtm()));
         let started = Instant::now();

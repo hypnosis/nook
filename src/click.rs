@@ -155,17 +155,24 @@ fn all_items(pids: &[i32]) -> Vec<(f64, AxItem)> {
 
 /// Иконки строки меню одного приложения с центрами x.
 fn app_items(pid: i32) -> Vec<(f64, AxItem)> {
-    bar_children(pid)
+    bar_children(pid, "AXExtrasMenuBar")
         .into_iter()
         .filter_map(|element| center_x(&element).map(|center| (center, AxItem { pid, element })))
         .collect()
 }
 
-/// Элементы строки меню приложения `pid` в Accessibility.
-fn bar_children(pid: i32) -> Vec<CFRetained<AXUIElement>> {
+/// Правый край меню приложения, которому сейчас принадлежит строка меню.
+pub fn app_menu_right() -> Option<f64> {
+    let pid = NSWorkspace::sharedWorkspace().menuBarOwningApplication()?.processIdentifier();
+    let last = bar_children(pid, "AXMenuBar").pop()?;
+    frame(&last).map(|(x, width)| x + width)
+}
+
+/// Элементы строки `bar` приложения `pid` в Accessibility: его меню или его иконки.
+fn bar_children(pid: i32, bar: &'static str) -> Vec<CFRetained<AXUIElement>> {
     let app = unsafe { AXUIElement::new_application(pid) };
     unsafe { app.set_messaging_timeout(AX_TIMEOUT) };
-    let Some(bar) = attribute(&app, "AXExtrasMenuBar") else {
+    let Some(bar) = attribute(&app, bar) else {
         return Vec::new();
     };
     let Some(bar) = bar.downcast::<AXUIElement>().ok() else {

@@ -87,9 +87,11 @@ impl Shroud {
         self.stale = true;
     }
 
-    /// Шторке нужна новая картинка для полосы `left..right`: полоса другая или картинка устарела.
+    /// Шторке нужна новая картинка для полосы `left..right`: шторка спрятана, полоса другая
+    /// или картинка устарела.
     pub fn needs_shot(&self, left: f64, right: f64) -> bool {
-        self.stale
+        !self.is_shown()
+            || self.stale
             || self.rect.is_none_or(|rect| {
                 (rect.origin.x - left).abs() > 0.5 || (rect.origin.x + rect.size.width - right).abs() > 0.5
             })
