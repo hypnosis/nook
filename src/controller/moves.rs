@@ -6,6 +6,21 @@ use super::Controller;
 use crate::timer::Timer;
 use crate::tuning::{MOVE_WATCHDOG, MOVE_WATCHDOG_POLL, NARROW_ITEM_WIDTH};
 
+/// Перенос Nook, итог которого сверит следующее чтение строки.
+pub(super) struct OwnMove {
+    kind: MoveKind,
+    /// Перенос уже повторён: вторую осечку Nook не повторяет.
+    retried: bool,
+}
+
+enum MoveKind {
+    /// Бросок из редактора: иконка, её соседи по строке и порядок панели в редакторе, если
+    /// иконку бросили в панель.
+    Drop { id: u32, before: Option<u32>, after: Option<u32>, panel: Option<Vec<u32>> },
+    /// Возврат запомненной панели.
+    Restore,
+}
+
 impl Controller {
     /// Плитка `id` брошена в редакторе. Внутри панели строку не трогаем: меняется только
     /// порядок панели. Иначе настоящая иконка переносится одним переносом: в панель —
@@ -31,15 +46,14 @@ impl Controller {
             self.show_layout();
             return;
         };
-        let (before, after) = if panel.contains(&id) {
-            *self.ivars().pending_drop.borrow_mut() = Some((id, panel));
-            (Some(divider), None)
+        let kind = if panel.contains(&id) {
+            MoveKind::Drop { id, before: Some(divider), after: None, panel: Some(panel) }
         } else {
             let Some(place) = main.iter().position(|&tile| tile == id) else { return };
             let after = place.checked_sub(1).map(|left| main[left]).or(Some(divider));
-            (main.get(place + 1).copied(), after)
+            MoveKind::Drop { id, before: main.get(place + 1).copied(), after, panel: None }
         };
-        self.start_move(id, before, after);
+        self.start_move(OwnMove { kind, retried: false });
     }
 
     /// Перенос закончен: строка читается заново, модель видит перестановку.
@@ -61,7 +75,7 @@ impl Controller {
             crate::mover::cancel();
             self.give_back_mouse();
             self.set_moving(false);
-            self.ivars().pending_drop.borrow_mut().take();
+            self.ivars().own_move.borrow_mut().take();
             self.bump_epoch();
             self.show_layout();
             self.request_read();
@@ -107,29 +121,57 @@ impl Controller {
     }
 
     /// Иконки запомненной панели встают левее разделителя панели, остальные — правее.
-    /// Пока идут переносы, строка не читается, курсор спрятан и мышь отвязана.
     pub(super) fn start_restore(&self) {
-        let (panel, keys) = {
-            let layout = self.ivars().layout.borrow();
-            (layout.panel().to_vec(), layout.saved().to_vec())
-        };
-        log::info!("раскладка: восстанавливаю панель {keys:?}");
+        self.start_move(OwnMove { kind: MoveKind::Restore, retried: false });
+    }
+
+    /// Запускает перенос Nook. Пока он идёт, строка не читается, курсор спрятан и мышь отвязана.
+    /// Повтор возврата панели ищет иконки по ключам: окна в модели уже следуют строке.
+    fn start_move(&self, own: OwnMove) {
         self.set_moving(true);
         self.bump_epoch();
         self.ivars().mouse_taken.set(true);
         crate::mover::take_mouse();
-        crate::mover::restore(panel, keys, self.notch_right());
+        match &own.kind {
+            MoveKind::Drop { id, before, after, .. } => crate::mover::move_one(*id, *before, *after, self.notch_right()),
+            MoveKind::Restore => {
+                let (panel, keys) = {
+                    let layout = self.ivars().layout.borrow();
+                    let panel = if own.retried { Vec::new() } else { layout.panel().to_vec() };
+                    (panel, layout.saved().to_vec())
+                };
+                log::info!("раскладка: восстанавливаю панель {keys:?}");
+                crate::mover::restore(panel, keys, self.notch_right());
+            }
+        }
+        *self.ivars().own_move.borrow_mut() = Some(own);
         self.arm_move_watchdog();
     }
 
-    /// Один перенос иконки `id` левее `before` и правее `after`; мышь на это время отвязана.
-    pub(super) fn start_move(&self, id: u32, before: Option<u32>, after: Option<u32>) {
-        self.set_moving(true);
-        self.bump_epoch();
-        self.ivars().mouse_taken.set(true);
-        crate::mover::take_mouse();
-        crate::mover::move_one(id, before, after, self.notch_right());
-        self.arm_move_watchdog();
+    /// Сверяет строку после переноса Nook с намерением. Перенос дошёл — бросок становится
+    /// намерением. Нет — перенос повторяется один раз, потом остаётся в журнале, намерение
+    /// прежнее. `None` — пошёл повтор, а это чтение уже устарело.
+    pub(super) fn settle_own_move(&self, own: OwnMove) -> Option<bool> {
+        let reached = {
+            let layout = self.ivars().layout.borrow();
+            match &own.kind {
+                MoveKind::Drop { id, panel, .. } => layout.panel().contains(id) == panel.is_some(),
+                MoveKind::Restore => layout.bar_matches_saved(),
+            }
+        };
+        if reached {
+            if let MoveKind::Drop { id, panel, .. } = &own.kind {
+                self.ivars().layout.borrow_mut().accept_drop(*id, panel.as_deref());
+            }
+            return Some(true);
+        }
+        if !own.retried {
+            log::warn!("раскладка: перенос Nook не дошёл до намерения — повторяю");
+            self.start_move(OwnMove { kind: own.kind, retried: true });
+            return None;
+        }
+        log::warn!("раскладка: перенос Nook не удался — порядок на диске прежний {:?}", self.ivars().layout.borrow().saved());
+        Some(false)
     }
 
     /// Сторож переноса проверит его через `MOVE_WATCHDOG_POLL`; прошлая проверка отменяется.

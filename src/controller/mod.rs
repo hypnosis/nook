@@ -93,8 +93,8 @@ pub struct ControllerIvars {
     epoch: Cell<u64>,
     /// Идёт перенос иконки.
     moving: Cell<bool>,
-    /// Иконка, брошенная в панель, и порядок панели в редакторе: применяется после переноса.
-    pending_drop: RefCell<Option<(u32, Vec<u32>)>>,
+    /// Перенос Nook, итог которого сверит следующее чтение.
+    own_move: RefCell<Option<moves::OwnMove>>,
     /// Мышь отвязана от курсора на время переноса.
     mouse_taken: Cell<bool>,
     /// Шторка над иконками панели у чёлки, пока строка раскрыта.
@@ -293,7 +293,7 @@ impl Controller {
             divider_window: Cell::new(None),
             epoch: Cell::new(0),
             moving: Cell::new(false),
-            pending_drop: RefCell::new(None),
+            own_move: RefCell::new(None),
             mouse_taken: Cell::new(false),
             shroud: RefCell::new(None),
         });

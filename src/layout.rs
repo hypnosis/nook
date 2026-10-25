@@ -1,5 +1,7 @@
 //! Модель раскладки: единственное место, где решается, какие иконки в панели и в каком порядке.
-//! Панель и редактор только показывают её вид.
+//! Порядок на диске — намерение, чтение строки — факт. Намерение меняют бросок в редакторе и
+//! Cmd+drag пользователя; осечка переноса Nook его не трогает. Панель и редактор только
+//! показывают вид модели.
 
 /// Иконка прочитанной строки: номер окна, ключ для диска, если приложение известно,
 /// и нарисована ли она. Очерёдность ненарисованных macOS путает, событием она не считается.
@@ -29,7 +31,7 @@ pub enum Change {
 }
 
 pub struct Layout {
-    /// Порядок панели на диске: ключи иконок, вместе с закрытыми приложениями.
+    /// Порядок панели на диске — намерение: ключи иконок, вместе с закрытыми приложениями.
     saved: Vec<String>,
     last: Option<Reading>,
     panel: Vec<u32>,
@@ -54,8 +56,71 @@ impl Layout {
         &self.saved
     }
 
-    /// Принимает достоверное чтение строки. Состав и порядок меняются только по событию.
+    /// Принимает чтение строки, которую менял пользователь или приложения. Иконка, попавшая в
+    /// панель, входит в намерение рядом с соседом; вынесенная из панели — выходит. Остальные
+    /// ключи остаются, даже если иконка сейчас в основном ряду.
     pub fn observe(&mut self, reading: Reading) -> Change {
+        self.observe_as(reading, false)
+    }
+
+    /// Принимает чтение после переноса Nook: вид следует строке, в намерение входят только
+    /// иконки, появившиеся за это время левее разделителя.
+    pub fn observe_own_move(&mut self, reading: Reading) -> Change {
+        self.observe_as(reading, true)
+    }
+
+    /// Удачный бросок становится намерением: брошенная в панель иконка встаёт по порядку
+    /// редактора `panel`, брошенная в основной ряд выходит из панели.
+    pub fn accept_drop(&mut self, id: u32, panel: Option<&[u32]>) {
+        match panel {
+            Some(order) => {
+                self.reorder_panel(order);
+                self.order_saved_by_panel();
+            }
+            None => {
+                let key = self.last.as_ref().and_then(|reading| key_of(reading, id)).map(str::to_owned);
+                if let Some(key) = key {
+                    let saved = self.saved.iter().filter(|saved| **saved != key).cloned().collect();
+                    self.set_saved(saved);
+                }
+            }
+        }
+    }
+
+    /// Порядок панели из редактора: состав прежний, меняется только очерёдность.
+    /// Возвращает, изменился ли порядок.
+    pub fn reorder_panel(&mut self, order: &[u32]) -> bool {
+        let mut panel: Vec<u32> = order.iter().copied().filter(|id| self.panel.contains(id)).collect();
+        panel.extend(self.panel.iter().copied().filter(|id| !order.contains(id)));
+        if panel == self.panel {
+            return false;
+        }
+        self.panel = panel;
+        self.order_saved_by_panel();
+        true
+    }
+
+    /// Строка совпадает с намерением: каждая иконка с известным ключом стоит в панели ровно
+    /// тогда, когда её ключ записан в порядке панели.
+    pub fn bar_matches_saved(&self) -> bool {
+        let Some(reading) = self.last.as_ref() else { return true };
+        let placed = |icons: &[Icon], in_panel: bool| {
+            icons.iter().all(|icon| icon.key.as_ref().is_none_or(|key| self.saved.contains(key) == in_panel))
+        };
+        placed(&reading.panel, true) && placed(&reading.main, false)
+    }
+
+    fn observe_as(&mut self, reading: Reading, own_move: bool) -> Change {
+        let previous = self.last.clone();
+        let change = self.take_reading(reading);
+        if let Some(previous) = previous.filter(|_| change != Change::Noise) {
+            self.follow_changes(&previous, own_move);
+        }
+        change
+    }
+
+    /// Вид модели по чтению: состав из строки, порядок панели по намерению.
+    fn take_reading(&mut self, reading: Reading) -> Change {
         let Some(last) = self.last.take() else {
             self.panel = by_saved(&reading.panel, &self.saved);
             self.main = ids(&reading.main);
@@ -80,34 +145,13 @@ impl Layout {
             }
             let at = self
                 .saved_place(icon, &panel, &reading)
-                .or_else(|| {
-                    reading.panel[..index]
-                        .iter()
-                        .rev()
-                        .find_map(|left| panel.iter().position(|id| *id == left.id))
-                        .map(|place| place + 1)
-                })
-                .unwrap_or(0);
+                .unwrap_or_else(|| after_left(&panel, reading.panel[..index].iter().map(|left| left.id)));
             panel.insert(at, icon.id);
         }
         self.panel = panel;
         self.main = ids(&reading.main);
         self.last = Some(reading);
-        self.save();
         change
-    }
-
-    /// Порядок панели из редактора: состав прежний, меняется только очерёдность.
-    /// Возвращает, изменился ли порядок.
-    pub fn reorder_panel(&mut self, order: &[u32]) -> bool {
-        let mut panel: Vec<u32> = order.iter().copied().filter(|id| self.panel.contains(id)).collect();
-        panel.extend(self.panel.iter().copied().filter(|id| !order.contains(id)));
-        if panel == self.panel {
-            return false;
-        }
-        self.panel = panel;
-        self.save();
-        true
     }
 
     /// Место для иконки `icon` в панели `panel` по сохранённому порядку: перед первой
@@ -121,29 +165,67 @@ impl Layout {
         Some(later.unwrap_or(panel.len()))
     }
 
-    /// Диск получает порядок панели; ключи закрытых приложений остаются рядом с прежними соседями.
-    fn save(&mut self) {
+    /// Намерение следует тому, что изменилось с прошлого чтения `previous`. После переноса Nook
+    /// в счёт идут только новые иконки: свою перестановку Nook сверяет отдельно.
+    fn follow_changes(&mut self, previous: &Reading, own_move: bool) {
         let Some(reading) = self.last.as_ref() else { return };
-        let mut saved: Vec<String> =
-            self.panel.iter().filter_map(|id| key_of(reading, *id).map(str::to_owned)).collect();
-        let present =
-            |key: &str| reading.panel.iter().chain(&reading.main).any(|icon| icon.key.as_deref() == Some(key));
-        for (index, key) in self.saved.iter().enumerate() {
-            if present(key) || saved.contains(key) {
-                continue;
+        let was_in_panel = |id: u32| previous.panel.iter().any(|icon| icon.id == id);
+        let was_present = |id: u32| was_in_panel(id) || previous.main.iter().any(|icon| icon.id == id);
+        let mut saved = self.saved.clone();
+        for (place, id) in self.panel.iter().enumerate() {
+            let Some(key) = key_of(reading, *id) else { continue };
+            let arrived = if own_move { !was_present(*id) } else { !was_in_panel(*id) };
+            if arrived && !saved.iter().any(|saved| saved == key) {
+                let left = self.panel[..place].iter().filter_map(|left| key_of(reading, *left).map(str::to_owned));
+                let at = after_left(&saved, left);
+                saved.insert(at, key.to_owned());
             }
-            let at = self.saved[..index]
-                .iter()
-                .rev()
-                .find_map(|left| saved.iter().position(|other| other == left))
-                .map_or(0, |place| place + 1);
-            saved.insert(at, key.clone());
         }
+        if !own_move {
+            let left_panel: Vec<&str> = reading
+                .main
+                .iter()
+                .filter(|icon| was_in_panel(icon.id))
+                .filter_map(|icon| icon.key.as_deref())
+                .collect();
+            saved.retain(|key| !left_panel.contains(&key.as_str()));
+        }
+        self.set_saved(saved);
+    }
+
+    /// Ключи иконок панели на диске встают в порядке панели на свои же места; ключи закрытых
+    /// приложений и иконок, стоящих сейчас в основном ряду, остаются где были.
+    fn order_saved_by_panel(&mut self) {
+        let Some(reading) = self.last.as_ref() else { return };
+        let keys: Vec<String> = self.panel.iter().filter_map(|id| key_of(reading, *id).map(str::to_owned)).collect();
+        let mut saved = self.saved.clone();
+        let mut slots: Vec<usize> = keys.iter().filter_map(|key| saved.iter().position(|saved| saved == key)).collect();
+        slots.sort_unstable();
+        let known: Vec<String> = keys.iter().filter(|key| saved.contains(key)).cloned().collect();
+        for (slot, key) in slots.into_iter().zip(known) {
+            saved[slot] = key;
+        }
+        for (index, key) in keys.iter().enumerate() {
+            if !saved.contains(key) {
+                let at = after_left(&saved, keys[..index].iter().cloned());
+                saved.insert(at, key.clone());
+            }
+        }
+        self.set_saved(saved);
+    }
+
+    fn set_saved(&mut self, saved: Vec<String>) {
         if saved != self.saved {
             log::info!("панель: порядок на диске {saved:?}");
             self.saved = saved;
         }
     }
+}
+
+/// Место в `list` сразу за ближайшим соседом слева из `left` (ближний последним), которого
+/// `list` уже знает; таких нет — начало.
+fn after_left<T: PartialEq>(list: &[T], left: impl DoubleEndedIterator<Item = T>) -> usize {
+    left.rev().find_map(|item| list.iter().position(|known| *known == item)).map_or(0, |place| place + 1)
 }
 
 /// Иконки панели в сохранённом порядке; незнакомые встают за соседом слева по строке.
@@ -156,11 +238,7 @@ fn by_saved(icons: &[Icon], saved: &[String]) -> Vec<u32> {
         if panel.contains(&icon.id) {
             continue;
         }
-        let at = icons[..index]
-            .iter()
-            .rev()
-            .find_map(|left| panel.iter().position(|id| *id == left.id))
-            .map_or(0, |place| place + 1);
+        let at = after_left(&panel, icons[..index].iter().map(|left| left.id));
         panel.insert(at, icon.id);
     }
     panel
@@ -321,6 +399,63 @@ mod tests {
         assert_eq!(layout.observe(swapped), Change::Moved);
         assert_eq!(layout.main(), &[11, 10]);
         assert_eq!(layout.panel(), &[2, 3, 1]);
+    }
+
+    #[test]
+    fn failed_own_move_keeps_intent() {
+        let mut layout = start();
+        let missed = reading(&[(1, "Ollama")], &[(2, "CleanShot"), (3, "AdGuard"), (10, "Hammer"), (11, "Mask")]);
+        layout.observe_own_move(missed);
+        assert_eq!(layout.panel(), &[1]);
+        assert!(!layout.bar_matches_saved());
+        assert_eq!(layout.saved(), saved(&["CleanShot", "AdGuard", "Ollama"]));
+    }
+
+    #[test]
+    fn app_change_after_failed_move_keeps_intent() {
+        let mut layout = start();
+        layout.observe_own_move(reading(&[(1, "Ollama")], &[(2, "CleanShot"), (3, "AdGuard"), (10, "Hammer")]));
+        let opened = reading(&[(1, "Ollama")], &[(2, "CleanShot"), (3, "AdGuard"), (10, "Hammer"), (12, "Docker")]);
+        assert_eq!(layout.observe(opened), Change::Apps);
+        assert_eq!(layout.saved(), saved(&["CleanShot", "AdGuard", "Ollama"]));
+    }
+
+    #[test]
+    fn user_change_after_failed_move_keeps_intent() {
+        let mut layout = start();
+        layout.observe_own_move(reading(&[(1, "Ollama")], &[(2, "CleanShot"), (3, "AdGuard"), (10, "Hammer")]));
+        let dragged = reading(&[(1, "Ollama"), (10, "Hammer")], &[(2, "CleanShot"), (3, "AdGuard")]);
+        assert_eq!(layout.observe(dragged), Change::Moved);
+        assert_eq!(layout.saved(), saved(&["CleanShot", "AdGuard", "Ollama", "Hammer"]));
+        layout.reorder_panel(&[10, 1]);
+        assert_eq!(layout.saved(), saved(&["CleanShot", "AdGuard", "Hammer", "Ollama"]));
+    }
+
+    #[test]
+    fn new_icon_during_own_move_joins_intent() {
+        let mut layout = start();
+        let moved = reading(&[(2, "CleanShot"), (3, "AdGuard"), (1, "Ollama"), (40, "Docker")], &[(10, "Hammer")]);
+        layout.observe_own_move(moved);
+        assert_eq!(layout.saved(), saved(&["CleanShot", "AdGuard", "Ollama", "Docker"]));
+        assert!(layout.bar_matches_saved());
+    }
+
+    #[test]
+    fn accepted_drops_change_only_the_dropped_icon() {
+        let mut layout = start();
+        layout.observe_own_move(reading(&[(1, "Ollama"), (2, "CleanShot"), (10, "Hammer")], &[(3, "AdGuard")]));
+        layout.accept_drop(10, Some(&[10, 2, 1]));
+        assert_eq!(layout.saved(), saved(&["Hammer", "CleanShot", "AdGuard", "Ollama"]));
+        layout.observe_own_move(reading(&[(1, "Ollama"), (2, "CleanShot")], &[(10, "Hammer"), (3, "AdGuard")]));
+        layout.accept_drop(10, None);
+        assert_eq!(layout.saved(), saved(&["CleanShot", "AdGuard", "Ollama"]));
+    }
+
+    #[test]
+    fn restored_bar_matches_intent() {
+        let mut layout = start();
+        layout.observe_own_move(reading(&[(2, "CleanShot"), (3, "AdGuard"), (1, "Ollama")], &[(10, "Hammer")]));
+        assert!(layout.bar_matches_saved());
     }
 
     #[test]

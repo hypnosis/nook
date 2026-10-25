@@ -71,13 +71,16 @@ impl Controller {
                 self.finish_startup_if_stuck();
                 return;
             };
-            let change = self.ivars().layout.borrow_mut().observe(reading);
-            let dropped = self.ivars().pending_drop.borrow_mut().take();
+            let own = self.ivars().own_move.borrow_mut().take();
+            let change = if own.is_some() {
+                self.ivars().layout.borrow_mut().observe_own_move(reading)
+            } else {
+                self.ivars().layout.borrow_mut().observe(reading)
+            };
             let mut changed = change != Change::Noise;
-            if let Some((id, order)) = dropped {
-                if self.ivars().layout.borrow().panel().contains(&id) {
-                    changed |= self.ivars().layout.borrow_mut().reorder_panel(&order);
-                }
+            if let Some(own) = own {
+                let Some(settled) = self.settle_own_move(own) else { return };
+                changed |= settled;
             }
             let layout = self.ivars().layout.borrow();
             if changed {

@@ -111,6 +111,7 @@ impl Controller {
         self.show_divider(!automatic);
         self.bump_epoch();
         if automatic {
+            self.ivars().own_move.borrow_mut().take();
             self.read_after(DIVIDER_SETTLE_DELAY);
         } else {
             self.restore_layout();
