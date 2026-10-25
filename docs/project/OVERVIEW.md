@@ -10,10 +10,16 @@ is fast, small and native: Rust on top of AppKit, nothing else.
   collapsed, an invisible spacer pushes everything to its left off screen. The
   menu bar collapses on its own after a few seconds of inactivity.
 - **Panel divider.** A second invisible item splits the expanded menu bar: icons
-  to its left live only in the panel and are never visible in the menu bar.
+  to its left live only in the panel and are never visible in the menu bar. It is
+  12 pt while there is room next to the notch, otherwise 500 pt, which hides
+  everything to its left.
+- **Shroud.** With the narrow divider, panel icons sit next to the notch under a
+  shroud: a window above the menu bar with a picture of the empty bar. It catches
+  clicks. When the active app's menu reaches that strip, the shroud goes away:
+  macOS hides the icons under the menu by itself.
 - **Panel.** Shows images of those icons below the menu bar. A click on an image
-  presses the real icon where it is hidden; its menu opens at the left edge of
-  the screen.
+  presses the real icon where it stands; its menu opens under it, next to the
+  notch.
 - **Layout.** In automatic mode, whatever doesn't fit goes to the panel and the
   panel divider leaves the menu bar. In manual mode, the user drags icons between
   two rows in Settings, and Nook moves the real icon. Turning automatic mode off
@@ -27,8 +33,8 @@ is fast, small and native: Rust on top of AppKit, nothing else.
 
 | Permission | Used for |
 |------------|----------|
-| Screen Recording | Images of hidden icons in the panel |
-| Accessibility | Pressing hidden icons, moving icons in manual layout |
+| Screen Recording | Images of hidden icons in the panel, the shroud picture |
+| Accessibility | Pressing hidden icons, moving icons in manual layout, the active app's menu edge |
 
 Without them, hiding and showing still works.
 

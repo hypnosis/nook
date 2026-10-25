@@ -73,8 +73,6 @@ pub struct ControllerIvars {
     blocked: Cell<bool>,
     /// Сколько проверок подряд сторож видит нарушение.
     bad_reads: Cell<u32>,
-    /// `<` уже переставлялся крайним правым в этом запуске.
-    anchor_repaired: Cell<bool>,
     /// Когда сменились экраны: строка в это время раскладывается заново.
     screens_changed: Cell<Option<Instant>>,
     /// Стартовое авто-скрытие уже запущено: его зовут и событие NSWindowDidMove, и таймер.
@@ -411,8 +409,8 @@ define_class!(
             }
         }
 
-        /// Сторож: нарушение, державшееся несколько проверок подряд, блокирует скрытие и ставит ⚠;
-        /// `<` за краем или под чёлкой один раз за запуск переставляется крайним правым.
+        /// Сторож: нарушенный порядок, державшийся несколько проверок подряд, блокирует скрытие и
+        /// ставит ⚠. Спрятанный `<` — не нарушение: его прячет macOS, и место `<` Nook не меняет.
         #[unsafe(method(onOrderCheck:))]
         fn on_order_check(&self, _timer: *mut AnyObject) {
             let settling = self
@@ -425,7 +423,7 @@ define_class!(
             }
             let (order, coords) = crate::bar::nook_order(self.notch_edge());
             match order {
-                Order::Unknown => {}
+                Order::Unknown | Order::Hidden => {}
                 Order::Ok => {
                     self.ivars().bad_reads.set(0);
                     if self.ivars().blocked.replace(false) {
@@ -437,44 +435,13 @@ define_class!(
                         self.request_read();
                     }
                 }
-                Order::Misordered | Order::Hidden => {
+                Order::Misordered => {
                     let bad = self.ivars().bad_reads.get() + 1;
                     self.ivars().bad_reads.set(bad);
-                    if bad < ORDER_BAD_READS {
-                        return;
-                    }
-                    self.show_blocked(order, &coords);
-                    if order == Order::Hidden && !self.ivars().anchor_repaired.replace(true) {
-                        let target: &AnyObject = self.as_ref();
-                        unsafe {
-                            NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-                                0.0,
-                                target,
-                                sel!(onRepairAnchor:),
-                                None,
-                                false,
-                            );
-                        }
+                    if bad >= ORDER_BAD_READS {
+                        self.show_blocked(order, &coords);
                     }
                 }
-            }
-        }
-
-        /// `<` не виден: пересоздаётся крайним правым, панель встаёт под новое окно.
-        #[unsafe(method(onRepairAnchor:))]
-        fn on_repair_anchor(&self, _timer: *mut AnyObject) {
-            {
-                let mut items_ref = self.ivars().items.borrow_mut();
-                let Some(items) = items_ref.as_mut() else { return };
-                let target: &AnyObject = self.as_ref();
-                unsafe { status_bar::place_anchor_rightmost(items, self.mtm(), target, self.ivars().lang) };
-                status_bar::set_anchor_symbol(items, self.mtm(), ANCHOR_SYMBOL_BLOCKED);
-            }
-            log::warn!("сторож: `<` не виден — переставлен крайним правым");
-            self.bump_epoch();
-            self.ivars().bad_reads.set(0);
-            if let Some(items) = self.ivars().items.borrow().as_ref() {
-                self.sync_panel(items, self.ivars().hidden.get());
             }
         }
 
@@ -485,11 +452,16 @@ define_class!(
             self.ivars().bad_reads.set(0);
         }
 
-        /// Готова картинка пустой полосы: шторка встаёт на неё, если строка с тех пор не менялась.
+        /// Готова картинка пустой полосы: шторка встаёт на неё, если строка с тех пор не менялась
+        /// и нажатая иконка не подсвечена.
         #[unsafe(method(onShroudPicture))]
         fn on_shroud_picture(&self) {
             let Some((image, rect, epoch)) = crate::shroud::take_picture() else { return };
-            if epoch != self.ivars().epoch.get() || self.ivars().hidden.get() || crate::settings::automatic_layout() {
+            if epoch != self.ivars().epoch.get()
+                || self.ivars().hidden.get()
+                || crate::settings::automatic_layout()
+                || crate::press::icon_highlighted()
+            {
                 return;
             }
             if let Some(shroud) = self.ivars().shroud.borrow_mut().as_mut() {
@@ -702,12 +674,24 @@ define_class!(
             }
         }
 
-        /// Сменилось активное приложение: его меню может зайти в полосу шторки, строка читается сразу.
+        /// Сменилось активное приложение: его меню заходит в полосу — шторка уходит сразу, не
+        /// дожидаясь чтения; строка читается заново.
         #[unsafe(method(onAppActivated:))]
         fn on_app_activated(&self, _notification: &NSNotification) {
-            if !self.ivars().hidden.get() {
-                self.request_read();
+            if self.ivars().hidden.get() {
+                return;
             }
+            let shown = self.ivars().shroud.borrow().as_ref().filter(|shroud| shroud.is_shown()).and_then(Shroud::rect);
+            if let Some(rect) = shown {
+                let pid = NSWorkspace::sharedWorkspace().frontmostApplication().map(|app| app.processIdentifier());
+                let menu_right = pid.and_then(crate::click::menu_right_of);
+                if crate::bar::menu_covers(menu_right, rect.origin.x) {
+                    self.hide_shroud();
+                    log::debug!("шторка: меню приложения до {menu_right:?} заходит в полосу — ушла");
+                }
+            }
+            self.bump_epoch();
+            self.request_read();
         }
 
         /// Клик по копии в панели — нажимаем настоящую иконку там, где она спрятана.
@@ -742,7 +726,6 @@ impl Controller {
             placement_attempts: Cell::new(0),
             blocked: Cell::new(false),
             bad_reads: Cell::new(0),
-            anchor_repaired: Cell::new(false),
             screens_changed: Cell::new(None),
             placement_done: Cell::new(false),
             starting: Cell::new(false),
@@ -817,9 +800,13 @@ impl Controller {
 
         let going_to_hide = !self.ivars().hidden.get();
 
-        // GUARD: прячем только если спейсер реально левее якоря и порядок цел.
+        // Прячем только при целом порядке. `<` спрятан macOS или ещё не размещён — ждём.
         if going_to_hide {
             let (order, coords) = crate::bar::nook_order(self.notch_edge());
+            if matches!(order, Order::Hidden | Order::Unknown) {
+                log::debug!("строка: не сворачиваю, {order:?} — {coords}");
+                return;
+            }
             if order != Order::Ok || self.ivars().blocked.get() {
                 self.show_blocked(order, &coords);
                 return;
@@ -969,7 +956,7 @@ impl Controller {
     }
 
     /// Держит длину разделителя в ручном режиме по правилу `Snapshot::divider_length`. Перед
-    /// сужением шторка закрывает место у чёлки. Возвращает `true`, если длина поменялась и строка
+    /// сужением шторка закрывает место у чёлки; пока нажатая иконка подсвечена, сужения нет. Возвращает `true`, если длина поменялась и строка
     /// будет прочитана заново.
     fn fit_divider(&self, snapshot: &Snapshot, automatic: bool) -> bool {
         if automatic {
@@ -981,6 +968,10 @@ impl Controller {
             return false;
         }
         if self.ivars().blocked.get() || crate::bar::nook_order(self.notch_edge()).0 != Order::Ok {
+            return false;
+        }
+        if wanted <= NARROW_ITEM_WIDTH && crate::press::icon_highlighted() {
+            log::debug!("разделитель: нажатая иконка подсвечена — сужу позже");
             return false;
         }
         log::info!("разделитель: длина {current:?} → {wanted}");
@@ -1034,7 +1025,7 @@ impl Controller {
             self.hide_shroud();
             return;
         };
-        if crate::press::menu_open() {
+        if crate::press::icon_highlighted() {
             return;
         }
         let mut shroud = self.ivars().shroud.borrow_mut();

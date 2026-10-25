@@ -125,19 +125,6 @@ pub unsafe fn recreate_anchor(
     items.anchor = make_anchor(&bar, mtm, target, lang);
 }
 
-/// Пересоздаёт якорь крайним правым: правее него только системные значки.
-pub unsafe fn place_anchor_rightmost(
-    items: &mut StatusItems,
-    mtm: MainThreadMarker,
-    target: &AnyObject,
-    lang: Lang,
-) {
-    let bar = NSStatusBar::systemStatusBar();
-    bar.removeStatusItem(&items.anchor);
-    write_place(ANCHOR_AUTOSAVE, ANCHOR_DEFAULT_PLACE);
-    items.anchor = make_anchor(&bar, mtm, target, lang);
-}
-
 /// ИТЕРАЦИЯ 4b-retry: пересоздаёт спейсер, если застрял на x=0.
 pub unsafe fn recreate_spacer(items: &mut StatusItems, mtm: MainThreadMarker, lang: Lang) {
     let bar = NSStatusBar::systemStatusBar();

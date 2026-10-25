@@ -163,7 +163,11 @@ fn app_items(pid: i32) -> Vec<(f64, AxItem)> {
 
 /// Правый край меню приложения, которому сейчас принадлежит строка меню.
 pub fn app_menu_right() -> Option<f64> {
-    let pid = NSWorkspace::sharedWorkspace().menuBarOwningApplication()?.processIdentifier();
+    menu_right_of(NSWorkspace::sharedWorkspace().menuBarOwningApplication()?.processIdentifier())
+}
+
+/// Правый край меню приложения `pid`.
+pub fn menu_right_of(pid: i32) -> Option<f64> {
     let last = bar_children(pid, "AXMenuBar").pop()?;
     frame(&last).map(|(x, width)| x + width)
 }

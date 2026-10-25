@@ -183,7 +183,13 @@ pub fn read_when_still(epoch: u64) {
         }
         crate::mover::wait_until_still();
         let snapshot = read(epoch, true);
-        *LATEST.lock().unwrap_or_else(PoisonError::into_inner) = snapshot;
+        let mut latest = LATEST.lock().unwrap_or_else(PoisonError::into_inner);
+        // Чтение, закончившееся позже, не затирает более свежее.
+        let older = matches!((&*latest, &snapshot), (Some(kept), Some(new)) if new.epoch < kept.epoch);
+        if !older {
+            *latest = snapshot;
+        }
+        drop(latest);
         DispatchQueue::main().exec_async(|| {
             let mtm = MainThreadMarker::new().expect("main queue");
             if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
