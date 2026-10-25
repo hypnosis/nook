@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.8] - 2026-10-25
+
+### Changed
+- Nook.app is built in release mode. The debug build checked every system call signature at runtime: 14% CPU with the menu bar collapsed and 38% expanded. Now it is near 0% collapsed and about 3% expanded; the binary is 0.6 MB instead of 5.7 MB.
+- The order watchdog runs only while the menu bar is expanded. An order broken while collapsed shows ⚠ after the next expand.
+- While an icon's menu is open, Nook asks the system about that one window instead of listing all windows.
+- One menu bar read lists windows once less, and the window list is parsed without creating strings for every window.
+
 ## [0.4.7] - 2026-10-25
 
 ### Fixed
