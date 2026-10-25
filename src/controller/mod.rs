@@ -89,6 +89,8 @@ pub struct ControllerIvars {
     layout: RefCell<Layout>,
     /// Номер окна разделителя у WindowServer.
     divider_window: Cell<Option<u32>>,
+    /// Номер окна `<` у WindowServer.
+    anchor_window: Cell<Option<u32>>,
     /// Поколение строки: растёт, когда Nook сам её меняет. Чтение старого поколения не принимается.
     epoch: Cell<u64>,
     /// Идёт перенос иконки.
@@ -291,6 +293,7 @@ impl Controller {
             divider: RefCell::new(None),
             layout: RefCell::new(Layout::new(crate::settings::panel_order())),
             divider_window: Cell::new(None),
+            anchor_window: Cell::new(None),
             epoch: Cell::new(0),
             moving: Cell::new(false),
             own_move: RefCell::new(None),

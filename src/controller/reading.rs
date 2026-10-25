@@ -36,9 +36,9 @@ impl Controller {
         if self.editor_busy() {
             return;
         }
-        let layout = self.ivars().layout.borrow();
+        let (panel, main) = self.editor_rows();
         if let Some(settings) = self.ivars().settings.borrow().as_ref() {
-            settings.editor.set_icons(images, ids, layout.panel(), layout.main());
+            settings.editor.set_icons(images, ids, &panel, &main);
         }
     }
 
@@ -58,6 +58,7 @@ impl Controller {
         if let Some(divider) = &snapshot.divider {
             self.ivars().divider_window.set(Some(divider.id));
         }
+        self.ivars().anchor_window.set(snapshot.anchor);
         let automatic = crate::settings::automatic_layout();
         if self.fit_divider(&snapshot, automatic) {
             return;
@@ -176,7 +177,8 @@ impl Controller {
         }
         if self.layout_shown() && !crate::settings::automatic_layout() && !self.editor_busy() {
             self.show_layout();
-            let ids: Vec<u32> = panel.iter().chain(main).copied().collect();
+            let anchor = self.ivars().anchor_window.get();
+            let ids: Vec<u32> = panel.iter().chain(main).copied().filter(|id| Some(*id) != anchor).collect();
             crate::capture::capture_for_editor(&ids);
         }
     }
@@ -206,9 +208,18 @@ impl Controller {
 
     /// Редактор показывает модель: брошенная, но не перенесённая плитка возвращается.
     pub(super) fn show_layout(&self) {
-        let layout = self.ivars().layout.borrow();
+        let (panel, main) = self.editor_rows();
         if let Some(settings) = self.ivars().settings.borrow().as_ref() {
-            settings.editor.show(layout.panel(), layout.main());
+            settings.editor.show(&panel, &main);
         }
+    }
+
+    /// Ряды редактора — вид модели без самого `<`: при нарушенном порядке он стоит левее `|`
+    /// и попадает в чтение строки, но плиткой в редакторе не бывает.
+    fn editor_rows(&self) -> (Vec<u32>, Vec<u32>) {
+        let anchor = self.ivars().anchor_window.get();
+        let layout = self.ivars().layout.borrow();
+        let row = |ids: &[u32]| ids.iter().copied().filter(|id| Some(*id) != anchor).collect();
+        (row(layout.panel()), row(layout.main()))
     }
 }

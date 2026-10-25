@@ -31,6 +31,8 @@ pub struct Snapshot {
     /// Иконки левее ≡◂ слева направо, без разделителя.
     pub icons: Vec<Slot>,
     pub divider: Option<Slot>,
+    /// Окно `<`.
+    pub anchor: Option<u32>,
     spacer_x: f64,
     /// Правый край меню активного приложения.
     menu_right: Option<f64>,
@@ -284,7 +286,8 @@ fn read(windows: &BarWindows, epoch: u64, owners: bool) -> Option<Snapshot> {
         icons.iter().map(at).collect::<Vec<_>>().join(", "),
         divider.as_ref().map(at)
     );
-    Some(Snapshot { epoch, icons, divider, spacer_x, menu_right })
+    let anchor = windows.anchor().map(|anchor| anchor.id);
+    Some(Snapshot { epoch, icons, divider, anchor, spacer_x, menu_right })
 }
 
 #[cfg(test)]
@@ -356,6 +359,7 @@ mod tests {
                 slot(1008.0, 34.0, true),
             ],
             divider: Some(slot(935.0, 28.0, divider_onscreen)),
+            anchor: None,
             spacer_x: 1122.0,
             menu_right: Some(700.0),
         }
