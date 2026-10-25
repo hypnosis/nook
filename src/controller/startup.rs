@@ -24,9 +24,8 @@ impl Controller {
         *self.ivars().items.borrow_mut() = Some(items);
         self.ivars().hidden.set(false);
 
-        // ОСНОВНОЙ триггер: подписка на NSWindowDidMoveNotification.
-        // Система постит её, когда айтем получает реальную координату (x:0→1700).
-        // Ловим точное СОБЫТИЕ размещения вместо гадания по таймеру.
+        // Размещение элемента приходит как NSWindowDidMoveNotification: macOS шлёт его, когда
+        // элемент получает настоящую координату.
         let target: &AnyObject = self.as_ref();
         unsafe {
             NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
@@ -111,7 +110,7 @@ impl Controller {
             return;
         }
 
-        // Обычный retry: пересоздать конкретный застрявший айтем.
+        // Пересоздаётся застрявший элемент.
         if sx == Some(UNPLACED_X) && self.ivars().spacer_retries.get() > 0 {
             self.ivars()
                 .spacer_retries
@@ -163,10 +162,9 @@ impl Controller {
         }
     }
 
-    /// Завершает стартовую настройку, КОГДА оба айтема размещены (x>0).
-    /// Вызывается и из события NSWindowDidMove (основной триггер), и из
-    /// fallback-таймера. Идемпотентно: срабатывает один раз (флаг placement_done),
-    /// отписывается от нотификации и создаёт разделитель панели.
+    /// Завершает стартовую настройку, когда оба элемента размещены (x>0). Зовётся из события
+    /// перемещения окна и из проверки по таймеру; срабатывает один раз (`placement_done`),
+    /// отписывается от события и создаёт разделитель панели.
     pub(super) fn finish_placement_if_ready(&self) {
         if self.ivars().placement_done.get() {
             return;

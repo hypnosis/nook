@@ -55,15 +55,15 @@ pub const SCREEN_SETTLE: Duration = Duration::from_secs(2);
 /// Места по умолчанию, когда macOS не помнит своих: `<` крайний правый, `|` вплотную левее.
 pub const ANCHOR_DEFAULT_PLACE: f64 = 0.0;
 pub const SPACER_DEFAULT_PLACE: f64 = 1.0;
-/// Максимум пересозданий одного айтема, застрявшего неразмещённым.
-pub const ANCHOR_MAX_RETRIES: u32 = 10;
+/// Максимум пересозданий одного элемента Nook, застрявшего неразмещённым.
+pub const ITEM_MAX_RETRIES: u32 = 10;
 /// После стольких безуспешных проверок пересоздаются оба айтема.
 pub const PLACEMENT_ESCALATE_AFTER: u32 = 4;
 /// Потолок проверок размещения.
 pub const PLACEMENT_MAX_ATTEMPTS: u32 = 30;
 
 /// Сколько ждать, что спейсер вышел на экран после раскрытия.
-pub const PANEL_CAPTURE_DELAY: Duration = Duration::from_millis(300);
+pub const SPACER_SHOW_TIMEOUT: Duration = Duration::from_millis(300);
 /// Сколько ждать, что показанный разделитель панели появился в строке.
 pub const DIVIDER_SHOW_TIMEOUT: Duration = Duration::from_millis(500);
 /// Пауза, чтобы macOS разложила строку после создания разделителя.

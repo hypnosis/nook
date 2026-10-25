@@ -1,13 +1,11 @@
-//! Контроллер-делегат: владеет айтемами и логикой скрытия с GUARD'ом.
+//! Контроллер-делегат: владеет элементами Nook в строке и связывает строку, панель, шторку
+//! и редактор.
 //!
-//! Это `NSApplicationDelegate`. Айтемы создаются в `applicationDidFinishLaunching:`.
-//! Контроллер держит оба `Retained<NSStatusItem>` живыми, пока жив сам.
+//! Это `NSApplicationDelegate`. Элементы создаются в `applicationDidFinishLaunching:`, и
+//! контроллер держит их живыми, пока жив сам.
 //!
-//! GUARD (бронебойность): перед раздуванием спейсера сверяем реальные X обоих
-//! айтемов. Раздуваем ТОЛЬКО если спейсер строго левее якоря. Иначе клик не
-//! прячет ничего (якорь не улетит), показывает `⚠` и пишет в лог — пользователь
-//! поправляет порядок Cmd+drag. Это решает баг «< улетел за край», т.к. в опасной
-//! конфигурации мы просто ничего не делаем.
+//! Строка сворачивается только при целом порядке: спейсер строго левее якоря. Иначе она
+//! остаётся раскрытой, на якоре `⚠`, и пользователь правит порядок Cmd+drag.
 //!
 //! Раскладка идёт в одну сторону: строка читается одним чтением (`bar`), модель
 //! (`layout`) решает состав и порядок, панель и редактор показывают её вид.
@@ -32,7 +30,7 @@ use crate::shroud::Shroud;
 use crate::timer::Timer;
 use crate::status_bar::StatusItems;
 use crate::strings::{self, Lang};
-use crate::tuning::ANCHOR_MAX_RETRIES;
+use crate::tuning::ITEM_MAX_RETRIES;
 
 mod collapse;
 mod moves;
@@ -213,9 +211,8 @@ define_class!(
             NSApplication::sharedApplication(self.mtm()).terminate(None);
         }
 
-        /// ОСНОВНОЙ триггер: айтем получил/сменил позицию. Если оба размещены —
-        /// завершаем стартовую настройку (авто-скрытие). Это точное событие,
-        /// в отличие от поллинга по таймеру.
+        /// Элемент Nook получил место в строке: если размещены оба, стартовая настройка
+        /// завершается.
         #[unsafe(method(onWindowMoved:))]
         fn on_window_moved(&self, _notification: &NSNotification) {
             self.finish_placement_if_ready();
@@ -274,8 +271,8 @@ impl Controller {
             monitor: RefCell::new(None),
             collapse_timer: RefCell::new(None),
             lang: strings::detect(),
-            anchor_retries: Cell::new(ANCHOR_MAX_RETRIES),
-            spacer_retries: Cell::new(ANCHOR_MAX_RETRIES),
+            anchor_retries: Cell::new(ITEM_MAX_RETRIES),
+            spacer_retries: Cell::new(ITEM_MAX_RETRIES),
             placement_attempts: Cell::new(0),
             blocked: Cell::new(false),
             bad_reads: Cell::new(0),

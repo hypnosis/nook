@@ -184,10 +184,8 @@ impl Controller {
         let target: &AnyObject = self.as_ref();
         let menu = unsafe { crate::menu::build(self.mtm(), target, self.ivars().lang) };
 
-        // Якорим меню к НИЖНЕЙ кромке кнопки, чтобы оно падало вниз, а не налезало
-        // на menu bar. NSStatusBarButton не flipped → y=0 это низ. При y>0 (над
-        // кнопкой) верх меню уходил под строку меню и первый пункт прятался под
-        // scroll-arrow. См. perplexity/AppKit: at = (midX, 0) в координатах кнопки.
+        // Меню привязано к нижней кромке кнопки и падает вниз: кнопка не flipped, y=0 — низ.
+        // Выше кромки верх меню уходит под строку меню.
         let origin = NSPoint::new(0.0, 0.0);
         menu.popUpMenuPositioningItem_atLocation_inView(None, origin, Some(&button));
     }

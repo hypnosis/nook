@@ -1,25 +1,16 @@
-//! Создание и настройка двух статус-айтемов: видимый якорь `<` + спейсер.
-//!
-//! Архитектура скрытия (ШАГ 1, проверена по работающему HiddenBar):
+//! Свои элементы Nook в строке меню: видимый якорь `<` и спейсер.
 //!
 //! ```text
-//! ПОКАЗАНО:  [ иконки ]  [спейсер]  [ < ]   ← спейсер узкий
-//!
-//! СКРЫТО:    [иконки уехали]←[ спейсер раздут ][ < ]  ← спейсер ~ширина экрана,
-//!                          вытолкнул за край            < на месте, виден
+//! Показано:  [ иконки ]  [спейсер]  [ < ]            спейсер узкий
+//! Скрыто:    [иконки за краем]←[ спейсер раздут ][ < ]  спейсер шире экрана, `<` на месте
 //! ```
 //!
-//! Роли:
-//! - ЯКОРЬ `<` — видимый, `variableLength`, ширину НЕ меняем НИКОГДА.
-//! - СПЕЙСЕР — раздуваем ЕГО: правый край прибит к левому краю якоря, растёт
-//!   влево, толкает только иконки левее себя.
+//! Ширина якоря не меняется. Спейсер растёт влево от якоря и выталкивает за край иконки
+//! левее себя.
 //!
-//! НАДЁЖНОСТЬ РАЗМЕЩЕНИЯ: размещение NSStatusItem асинхронно
-//! и иногда «залипает» на x=0 (айтем не получил слот). Лечится тремя слоями:
-//! 1. спейсер создаётся ПЕРВЫМ (стабильнее получает правый слот);
-//! 2. контроллер по таймеру пересоздаёт застрявший на x=0 айтем (retry);
-//! 3. GUARD перед раздуванием требует оба x>0 и спейсер строго левее якоря —
-//!    иначе безопасный отказ (якорь не уезжает). Пользователь правит Cmd+drag.
+//! macOS размещает элементы асинхронно и иногда оставляет элемент на x=0 без места. Спейсер
+//! создаётся первым, застрявший элемент контроллер пересоздаёт, а сворачивание идёт только
+//! при спейсере строго левее якоря.
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -68,7 +59,7 @@ pub unsafe fn create(mtm: MainThreadMarker, target: &AnyObject, lang: Lang) -> S
         write_place(ANCHOR_AUTOSAVE, ANCHOR_DEFAULT_PLACE);
     }
 
-    // Спейсер создаётся ПЕРВЫМ: macOS добавляет новые статус-айтемы слева от
+    // Спейсер создаётся первым: macOS добавляет новые статус-айтемы слева от
     // существующих, и иначе спейсер может не получить слот и упасть на x=0.
     let spacer = make_spacer(&bar, mtm, lang);
     let anchor = make_anchor(&bar, mtm, target, lang);
@@ -76,7 +67,7 @@ pub unsafe fn create(mtm: MainThreadMarker, target: &AnyObject, lang: Lang) -> S
     StatusItems { anchor, spacer }
 }
 
-/// Создаёт спейсер (fixed width, символ cutter). Вынесено для переиспользования.
+/// Создаёт узкий спейсер.
 unsafe fn make_spacer(
     bar: &NSStatusBar,
     mtm: MainThreadMarker,
@@ -91,7 +82,7 @@ unsafe fn make_spacer(
     spacer
 }
 
-/// Создаёт якорь `<` (variableLength, клик-обработчик). Вынесено для retry.
+/// Создаёт якорь `<`: переменной длины, ловит левый и правый клик.
 unsafe fn make_anchor(
     bar: &NSStatusBar,
     mtm: MainThreadMarker,
@@ -105,8 +96,8 @@ unsafe fn make_anchor(
         button.setToolTip(Some(&NSString::from_str(strings::anchor_tooltip(lang))));
         button.setTarget(Some(target));
         button.setAction(Some(action_for_click()));
-        // Ловим И левый, И правый клик — разделяем их в обработчике (левый =
-        // toggle, правый = меню). sendActionOn возвращает старую маску — игнор.
+        // Левый и правый клик разделяет обработчик: левый сворачивает, правый открывает меню.
+        // sendActionOn возвращает прежнюю маску, она не нужна.
         let _ = button.sendActionOn(NSEventMask::LeftMouseUp | NSEventMask::RightMouseUp);
     } else {
         log::warn!("anchor button() returned nil — клик работать не будет");
@@ -114,9 +105,8 @@ unsafe fn make_anchor(
     anchor
 }
 
-/// ИТЕРАЦИЯ 4-retry: пересоздаёт якорь, если он застрял на x=0. Старый айтем
-/// удаляется из бара, создаётся новый. Вызывается асинхронно из таймера контроллера
-/// (после возврата из didFinishLaunching — иначе координаты не размещаются).
+/// Пересоздаёт якорь, застрявший на x=0; место в строке сохраняется. Зовётся из таймера
+/// контроллера: внутри didFinishLaunching элементы ещё не размещены.
 pub unsafe fn recreate_anchor(
     items: &mut StatusItems,
     mtm: MainThreadMarker,
@@ -125,21 +115,20 @@ pub unsafe fn recreate_anchor(
 ) {
     let bar = NSStatusBar::systemStatusBar();
     remove_keeping_place(&bar, &items.anchor, ANCHOR_AUTOSAVE);
-    log::info!("retry: удалил застрявший якорь, создаю заново");
+    log::info!("строка: якорь не размещён — пересоздаю");
     items.anchor = make_anchor(&bar, mtm, target, lang);
 }
 
-/// ИТЕРАЦИЯ 4b-retry: пересоздаёт спейсер, если застрял на x=0.
+/// Пересоздаёт спейсер, застрявший на x=0.
 pub unsafe fn recreate_spacer(items: &mut StatusItems, mtm: MainThreadMarker, lang: Lang) {
     let bar = NSStatusBar::systemStatusBar();
     remove_keeping_place(&bar, &items.spacer, SPACER_AUTOSAVE);
-    log::info!("retry: удалил застрявший спейсер, создаю заново");
+    log::info!("строка: спейсер не размещён — пересоздаю");
     items.spacer = make_spacer(&bar, mtm, lang);
 }
 
-/// ИТЕРАЦИЯ 7-эскалация: полный сброс композиции. Когда повторное пересоздание
-/// одного айтема не помогает (новый садится на тот же x=0), удаляем ОБА и создаём
-/// заново в правильном порядке — система перераскладывает слоты с нуля.
+/// Пересоздаёт оба элемента в нужном порядке, когда пересоздание одного не помогает:
+/// macOS раскладывает их места заново.
 pub unsafe fn recreate_both(
     items: &mut StatusItems,
     mtm: MainThreadMarker,
@@ -149,7 +138,7 @@ pub unsafe fn recreate_both(
     let bar = NSStatusBar::systemStatusBar();
     remove_keeping_place(&bar, &items.spacer, SPACER_AUTOSAVE);
     remove_keeping_place(&bar, &items.anchor, ANCHOR_AUTOSAVE);
-    log::info!("retry-эскалация: удалил ОБА айтема, пересоздаю композицию");
+    log::info!("строка: элементы не размещены — пересоздаю оба");
     items.spacer = make_spacer(&bar, mtm, lang);
     items.anchor = make_anchor(&bar, mtm, target, lang);
 }

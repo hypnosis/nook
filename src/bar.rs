@@ -10,8 +10,8 @@ use crate::capture::IconWindow;
 use crate::layout::{Icon, Reading};
 use crate::status_bar::UNPLACED_X;
 use crate::tuning::{
-    BAR_POLL, HIDING_WIDTH_MIN, NARROW_ITEM_WIDTH, NARROW_WINDOW_MAX, NOTCH_CLEARANCE, PANEL_CAPTURE_DELAY,
-    POSITION_TOLERANCE, SCREEN_MARGIN, SHROUD_MARGIN, WINDOW_CHROME,
+    BAR_POLL, HIDING_WIDTH_MIN, NARROW_ITEM_WIDTH, NARROW_WINDOW_MAX, NOTCH_CLEARANCE, POSITION_TOLERANCE,
+    SCREEN_MARGIN, SHROUD_MARGIN, SPACER_SHOW_TIMEOUT, WINDOW_CHROME,
 };
 
 /// Окно иконки в прочитанной строке.
@@ -206,7 +206,7 @@ pub fn read_when_still(epoch: u64) {
 fn serve(requests: Receiver<u64>) {
     while let Ok(first) = requests.recv() {
         let epoch = latest_epoch(first, requests.try_iter());
-        let deadline = Instant::now() + PANEL_CAPTURE_DELAY;
+        let deadline = Instant::now() + SPACER_SHOW_TIMEOUT;
         while spacer_x().is_none() && Instant::now() < deadline {
             thread::sleep(BAR_POLL);
         }
