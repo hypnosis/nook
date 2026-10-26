@@ -98,6 +98,9 @@ impl Controller {
     /// в ручном режиме он возвращается на своё место.
     pub(super) fn automatic_layout_switched(&self, sender: &NSSwitch) {
         if self.ivars().moving.get() {
+            if let Some(settings) = self.ivars().settings.borrow().as_ref() {
+                settings.refresh();
+            }
             return;
         }
         let automatic = sender.state() == NSControlStateValueOn;

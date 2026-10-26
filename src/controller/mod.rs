@@ -319,6 +319,6 @@ impl Controller {
     }
 
     fn notch_right(&self) -> f64 {
-        NSScreen::mainScreen(self.mtm()).map_or(0.0, |screen| screen.auxiliaryTopRightArea().origin.x)
+        self.notch_edge().unwrap_or(0.0)
     }
 }
