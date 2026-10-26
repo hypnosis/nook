@@ -78,6 +78,9 @@ impl Controller {
 
     /// Шторка сразу закрывает всё от чёлки до `right`: туда сейчас встанут иконки панели.
     pub(super) fn cover_now(&self, right: f64) {
+        if !crate::permissions::screen_recording_granted() {
+            return;
+        }
         let left = self.notch_edge().unwrap_or(0.0);
         if crate::bar::menu_covers(crate::click::app_menu_right(), left) {
             log::debug!("шторка: меню приложения заходит в полосу {left:.0}..{right:.0} — без шторки");

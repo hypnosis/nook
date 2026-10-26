@@ -12,7 +12,7 @@ use crate::bar::{Order, Snapshot};
 use crate::layout::Change;
 use crate::panel::Panel;
 use crate::settings::Settings;
-use crate::tuning::{NARROW_ITEM_WIDTH, POSITION_TOLERANCE};
+use crate::tuning::{HIDING_WIDTH_MIN, NARROW_ITEM_WIDTH, POSITION_TOLERANCE};
 
 impl Controller {
     /// Открыт раздел «Расположение»: раскрываем строку и читаем её.
@@ -129,7 +129,11 @@ impl Controller {
         if automatic {
             return false;
         }
-        let Some(wanted) = snapshot.divider_length(self.notch_edge()) else { return false };
+        let Some(mut wanted) = snapshot.divider_length(self.notch_edge()) else { return false };
+        // Без права «Запись экрана» шторке нечем закрыть иконки у чёлки.
+        if wanted <= NARROW_ITEM_WIDTH && !crate::permissions::screen_recording_granted() {
+            wanted = HIDING_WIDTH_MIN;
+        }
         let current = self.divider().map(|divider| divider.length());
         if current.is_none_or(|current| (current - wanted).abs() <= POSITION_TOLERANCE) {
             return false;

@@ -74,6 +74,11 @@ impl Permission {
     }
 }
 
+/// Право «Запись экрана»: без него нет снимков панели и шторки.
+pub fn screen_recording_granted() -> bool {
+    Permission::ScreenRecording.is_granted()
+}
+
 pub fn all_granted() -> bool {
     ALL.iter().all(|permission| permission.is_granted())
 }
