@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.11] - 2026-10-26
+
+### Fixed
+- The automatic layout switch, clicked while Nook is moving icons, flips back to the real setting instead of showing the wrong one.
+- With the settings window on an external monitor, icons dropped in the editor no longer land under the notch.
+
 ## [0.4.10] - 2026-10-26
 
 ### Fixed
