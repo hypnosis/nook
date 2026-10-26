@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.10] - 2026-10-26
+
+### Fixed
+- Without the Screen Recording permission, panel icons no longer show next to the notch: the panel divider stays wide, and Nook does not try to take a shroud snapshot it cannot get.
+
 ## [0.4.9] - 2026-10-26
 
 ### Fixed
