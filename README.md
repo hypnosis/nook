@@ -45,7 +45,7 @@ panel order is kept across restarts.
 Hiding icons works without any permissions. The panel needs two:
 
 - **Screen Recording** — to show hidden icons in the panel. Only the menu bar is
-  captured.
+  captured. Without it, panel icons stay hidden in the menu bar.
 - **Accessibility** — to open an icon's menu when you click it in the panel, and
   to move icons in manual layout.
 

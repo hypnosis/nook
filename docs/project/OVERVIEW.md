@@ -36,7 +36,8 @@ is fast, small and native: Rust on top of AppKit, nothing else.
 | Screen Recording | Images of hidden icons in the panel, the shroud picture |
 | Accessibility | Pressing hidden icons, moving icons in manual layout, the active app's menu edge |
 
-Without them, hiding and showing still works.
+Without them, hiding and showing still works. Without Screen Recording, panel icons stay
+hidden in the menu bar: there is no shroud picture to cover them at the notch.
 
 ## Scope
 
